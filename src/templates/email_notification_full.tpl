@@ -53,35 +53,35 @@
 </head>
 <body>
     <div class='header'>
-        <h1>{$site_title}</h1>
+        <h1>{$site_title|escape:'htmlall'}</h1>
     </div>
     <div class='content'>
-        {if $hero_image_url}
-        <div class='hero-container' style='padding-bottom: {$hero_image_height|default:100}%; position: relative; margin: -20px -20px 20px -20px; width: calc(100% + 40px); max-width: none;'>
-            <img src='{$hero_image_url}'
-                 alt='{$post_title}'
+         {if $hero_image_url}
+         <div class='hero-container' style='padding-bottom: {$hero_image_height|default:100}%; position: relative; margin: -20px -20px 20px -20px; width: calc(100% + 40px); max-width: none;'>
+              <img src='{$hero_image_url|escape:'htmlall'}'
+                   alt='{$post_title|escape:'htmlall'}'
                  class='hero-image'
                  style='position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; object-position: center; display: block;{if $hero_title_overlay|default:1} filter: brightness({$hero_overlay_opacity|default:0.70});{/if}' />
             {if $hero_title_overlay|default:1}
-            <div class='hero-title-overlay' style='position: absolute; bottom: 0; left: 0; right: 0; padding: 20px; background: linear-gradient(to top, rgba(0,0,0,0.7) 0%, rgba(0,0,0,0) 100%);'>
-                <h2 style='margin: 0; color: #ffffff; font-size: 24px; font-weight: bold;'>{$post_title}</h2>
-            </div>
-            {/if}
-        </div>
-        {/if}
-        {if !$hero_title_overlay|default:1 || !$hero_image_url}
-        <div class='post-title'>{$post_title}</div>
+             <div class='hero-title-overlay' style='position: absolute; bottom: 0; left: 0; right: 0; padding: 20px; background: linear-gradient(to top, rgba(0,0,0,0.7) 0%, rgba(0,0,0,0) 100%);'>
+                  <h2 style='margin: 0; color: #ffffff; font-size: 24px; font-weight: bold;'>{$post_title|escape:'htmlall'}</h2>
+             </div>
+             {/if}
+         </div>
+         {/if}
+         {if !$hero_title_overlay|default:1 || !$hero_image_url}
+          <div class='post-title'>{$post_title|escape:'htmlall'}</div>
         {/if}
         <div class='post-body'>
             {$body_html nofilter}
         </div>
     </div>
     <div style='text-align: center;'>
-        <a href='{$post_url}' class='cta-button'>View Full Post on Site</a>
-    </div>
-    <div class='footer'>
-        <p>You're receiving this because you subscribed to updates from {$site_title}.</p>
-        <p><a href='{$base_url}'>Visit our site</a> | <a href='{$unsubscribe_url}'>Unsubscribe</a></p>
-    </div>
+         <a href='{$post_url|escape:'htmlall'}' class='cta-button'>View Full Post on Site</a>
+     </div>
+     <div class='footer'>
+          <p>You're receiving this because you subscribed to updates from {$site_title|escape:'htmlall'}.</p>
+          <p><a href='{$base_url|escape:'htmlall'}'>Visit our site</a> | <a href='{$unsubscribe_url|escape:'htmlall'}'>Unsubscribe</a></p>
+     </div>
 </body>
 </html>

@@ -36,7 +36,10 @@ class ViewRenderer
         }
         // Fall back to a new Composer-managed Smarty instance when none was provided.
         $instance = new Smarty();
-        $instance->setTemplateDir(__DIR__ . '/../templates');
+        $instance->setTemplateDir([
+            __DIR__ . '/../templates',
+            __DIR__ . '/..',
+        ]);
         $instance->setCompileDir(__DIR__ . '/../cache');
         $instance->setCacheDir(__DIR__ . '/../cache');
         $instance->escape_html = false;

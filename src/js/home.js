@@ -27,13 +27,13 @@
   const seenViews = loadSeenSet(LS_VIEWS_KEY);
   const pageImpressions = new Set();
 
-  function renderPostCard(post, isAuth) {
-    const hasHero = !!(post.hero_srcset_jpg || post.hero_srcset_webp);
-    const showTitleOverlay = (post.hero_title_overlay == 1) || (post.hero_title_overlay === undefined);
-    const opacity = post.hero_overlay_opacity != null ? post.hero_overlay_opacity : 0.70;
-    const title = escapeHtml(post.title || '');
-    const canSeeViews = SHOW_VIEW_COUNTS || isAuth;
-    const canSeeImpressions = SHOW_IMPRESSION_COUNTS || isAuth;
+  function renderPostCard(post, isAuth, isAdmin) {
+     const hasHero = !!(post.hero_srcset_jpg || post.hero_srcset_webp);
+     const showTitleOverlay = (post.hero_title_overlay == 1) || (post.hero_title_overlay === undefined);
+     const opacity = post.hero_overlay_opacity != null ? post.hero_overlay_opacity : 0.70;
+     const title = escapeHtml(post.title || '');
+     const canSeeViews = SHOW_VIEW_COUNTS || isAuth;
+     const canSeeImpressions = SHOW_IMPRESSION_COUNTS || isAuth;
     const isDraft = post.status === 'draft';
     const hideDrafts = shouldHideDrafts();
 
@@ -73,7 +73,7 @@
       metricsBadges = `<div class="post-metrics-badges d-flex gap-1 flex-wrap justify-content-end">${badges}</div>`;
     }
 
-    const adminBtns = isAuth ? `
+    const adminBtns = isAdmin ? `
       <div class="btn-group" role="group">
         <button class="btn btn-sm btn-outline-secondary btn-edit-post-home" data-post-id="${post.id}" title="Edit post">
           <i class="bi bi-pencil"></i> Edit
@@ -167,7 +167,7 @@
     let authorHtml = '';
     if (post.author_first || post.author_last) {
       const authorName = [post.author_first, post.author_last].filter(Boolean).join(' ');
-      authorHtml = `<p class="text-muted small mb-3"><em>By ${authorName}</em></p>`;
+      authorHtml = `<p class="text-muted small mb-3"><em>By ${escapeHtml(authorName)}</em></p>`;
     }
 
     body.innerHTML = authorHtml + (post.body_html || '');
@@ -851,7 +851,8 @@
       const offset = parseInt(btn.getAttribute('data-offset') || '0', 10);
       const list = document.getElementById('posts-list');
       const loading = document.getElementById('posts-loading-indicator');
-      const isAuth = !!document.querySelector('meta[name="csrf-token"]');
+      const isAuth = !!window.GLOBAL?.config?.authenticated;
+      const isAdmin = !!window.GLOBAL?.config?.isAdmin;
 
       try {
         btn.disabled = true;
@@ -868,9 +869,9 @@
           return;
         }
 
-        // Build HTML and append
-        const frag = document.createElement('div');
-        frag.innerHTML = posts.map(p => renderPostCard(p, isAuth)).join('');
+         // Build HTML and append
+         const frag = document.createElement('div');
+         frag.innerHTML = posts.map(p => renderPostCard(p, isAuth, isAdmin)).join('');
         // Append children to keep only timeline-item nodes
         while (frag.firstChild) {
           list.appendChild(frag.firstChild);

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use PostPortal\Container\ServiceContainer;
 use PostPortal\Http\ViewRenderer;
+use PostPortal\Http\SessionPolicy;
 
 require_once __DIR__ . '/functions.php';
 
@@ -30,6 +31,7 @@ require_once __DIR__ . '/Service/NewsletterService.php';
 
 // Container and View
 require_once __DIR__ . '/Container/ServiceContainer.php';
+require_once __DIR__ . '/Http/SessionPolicy.php';
 require_once __DIR__ . '/Http/ViewRenderer.php';
 
 /**
@@ -73,6 +75,8 @@ set_exception_handler(function (\Throwable $e): void {
  */
 function bootstrapPageContext(bool $requireAuth = false, bool $requireAdmin = false): array
 {
+    // SEC-09: Apply session policy before first session_start
+    SessionPolicy::apply();
     ensureSession();
 
     if ($requireAuth && (empty($_SESSION['authenticated']) || empty($_SESSION['username']))) {
@@ -81,7 +85,8 @@ function bootstrapPageContext(bool $requireAuth = false, bool $requireAdmin = fa
         exit;
     }
 
-    if ($requireAdmin && isset($_SESSION['isadmin']) && !$_SESSION['isadmin']) {
+    // VAL-01: Fail-closed admin check - require explicit isadmin === true
+    if ($requireAdmin && (!isset($_SESSION['isadmin']) || $_SESSION['isadmin'] !== true)) {
         http_response_code(403);
         echo 'You do not have access to this page.';
         exit;

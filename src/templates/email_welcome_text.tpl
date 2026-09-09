@@ -1,15 +1,14 @@
-Welcome to {$site_title}!
+Welcome to {$site_title|escape:'html'}!
 
-Hello {$display_name},
+Hello {$display_name|escape:'html'},
 
-Your account has been created. Here are your login credentials:
+Your account has been created on {$site_title|escape:'html'}. Please activate your account using the link below:
 
-Username: {$username}
-Password: {$password}
+Username: {$username|escape:'html'}
 
-IMPORTANT: Please change your password after your first login for security.
+Activate your account: {$activation_url nofilter}
 
-Login at: {$site_url}
+IMPORTANT: This activation link will expire after a set period for security reasons. Please activate your account promptly.
 
 ---
 This email was sent automatically. Please do not reply.

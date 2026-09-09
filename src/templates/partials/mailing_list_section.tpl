@@ -10,7 +10,7 @@
     }
   </style>
   <div class="card mb-4 position-relative">
-    {if $is_authenticated|default:false}
+    {if $is_admin|default:false}
       <button class="btn btn-sm btn-light btn-edit-section position-absolute top-0 end-0 m-2" style="z-index: 10;" data-bs-toggle="modal" data-bs-target="#editMailingListModal" title="Edit Mailing List Section">
         <i class="bi bi-pencil"></i> Edit
       </button>
@@ -19,7 +19,7 @@
       <h5 class="card-title">Stay Updated</h5>
       <div class="card-text mb-3">{$settings.mailing_list_html nofilter}</div>
 
-      {* Email signup form - shown if no cookie exists *}
+      {* Email signup form *}
       <div id="newsletter-signup-form">
         <form id="newsletterSignupForm" class="needs-validation" novalidate>
           <div class="mb-3">
@@ -46,13 +46,9 @@
         </form>
       </div>
 
-      {* Success message - shown after subscription or if cookie exists *}
-      <div id="newsletter-subscribed" class="alert alert-success d-none" role="alert">
+      <div id="newsletter-pending-confirmation" class="alert alert-success d-none" role="status">
         <i class="bi bi-check-circle-fill me-2"></i>
-        <strong>You're subscribed!</strong> We'll notify you when new updates are posted.
-        <a href="#" class="alert-link mt-2 d-inline-block" id="newsletter-signup-another">
-          Sign up another
-        </a>
+        <strong>Check your email to confirm.</strong> Open the verification link to complete your subscription.
       </div>
     </div>
   </div>

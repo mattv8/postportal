@@ -18,8 +18,8 @@ ApiHandler::handle(function (): void {
         ErrorResponse::json(405, 'Method not allowed');
     }
 
-    // Check if user is authenticated (admin)
-    $isAuthenticated = !empty($_SESSION['authenticated']);
+    // Check if user is admin (explicit true)
+    $isAdmin = ($_SESSION['isadmin'] ?? null) === true;
 
     if (isset($_GET['id'])) {
         $id = (int) $_GET['id'];
@@ -27,12 +27,12 @@ ApiHandler::handle(function (): void {
 
         // Allow admins to view draft posts, but public only sees published
         $isDraft = ($post['status'] ?? '') === 'draft';
-        if (!$post || (!$isAuthenticated && $isDraft) || ($post['status'] ?? '') !== 'published' && !$isAuthenticated) {
+        if (!$post || (!$isAdmin && $isDraft) || ($post['status'] ?? '') !== 'published' && !$isAdmin) {
             ErrorResponse::notFound('Not found');
         }
 
         // For draft posts, use draft content fields for display
-        if ($isDraft && $isAuthenticated) {
+        if ($isDraft && $isAdmin) {
             if (!empty($post['title_draft'])) {
                 $post['title'] = $post['title_draft'];
             }
@@ -96,7 +96,7 @@ ApiHandler::handle(function (): void {
     $offset = isset($_GET['offset']) ? max(0, (int) $_GET['offset']) : 0;
 
     // For admins, include draft posts; for public, only published
-    if ($isAuthenticated) {
+    if ($isAdmin) {
         $posts = $postService->getPostsIncludingDrafts($limit, $offset);
     } else {
         $posts = $postService->getPublishedPosts($limit, $offset);

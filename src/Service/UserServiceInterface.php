@@ -59,4 +59,14 @@ interface UserServiceInterface
      * @return array{success: bool, message?: string, error?: string}
      */
     public function deleteUser(string $username, string $currentUser): array;
+
+    /**
+     * Issue a one-time activation token for a user.
+     * Returns the raw token once; only the hash and expiry are persisted.
+     * SEC-11: Account activation with single-use, hashed, time-bound tokens.
+     *
+     * @param string $username
+     * @return array{success: bool, token?: string, expires_at?: string, error?: string}
+     */
+    public function issueActivationToken(string $username): array;
 }

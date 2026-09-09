@@ -10,16 +10,46 @@ use PostPortal\Http\ViewRenderer;
 require_once __DIR__ . '/../bootstrap.php';
 
 /**
- * Send welcome email to newly created user with their credentials
+ * Send welcome email to newly created user with activation link
  *
  * @param ServiceContainer $container
  * @param array<string, mixed> $userData
- * @param string $password Plain text password (before hashing)
+ * @param string $activationUrl Canonical URL with activation token
  * @return array{success: bool, error?: string}
  */
-function sendWelcomeEmail(ServiceContainer $container, array $userData, string $password): array
+function sendWelcomeEmail(ServiceContainer $container, array $userData, string $activationUrl): array
 {
     try {
+        require_once __DIR__ . '/../../functions.php';
+        $siteUrl = getCanonicalAppUrl();
+        $username = trim((string)($userData['username'] ?? ''));
+        $activationParts = parse_url($activationUrl);
+        $activationQuery = [];
+        if (is_array($activationParts)) {
+            parse_str((string)($activationParts['query'] ?? ''), $activationQuery);
+        }
+        $expectedActivationUrl = $siteUrl . '/?' . http_build_query([
+            'page' => 'login',
+            'activate' => '1',
+            'username' => $username,
+            'token' => (string)($activationQuery['token'] ?? ''),
+        ], '', '&', PHP_QUERY_RFC3986);
+        if (!is_array($activationParts)
+            || !isset($activationParts['scheme'], $activationParts['host'])
+            || !in_array(strtolower($activationParts['scheme']), ['http', 'https'], true)
+            || !is_array($activationQuery)
+            || !isset($activationQuery['page'], $activationQuery['activate'], $activationQuery['username'], $activationQuery['token'])
+            || count($activationQuery) !== 4
+            || $activationQuery['page'] !== 'login'
+            || $activationQuery['activate'] !== '1'
+            || $activationQuery['username'] !== $username
+            || !is_string($activationQuery['token'])
+            || preg_match('/\A[a-f0-9]{64}\z/', $activationQuery['token']) !== 1
+            || !hash_equals($expectedActivationUrl, $activationUrl)) {
+            error_log('Welcome activation link validation failed');
+            return ['success' => false, 'error' => 'Unable to send welcome email.'];
+        }
+
         $settingsRepository = $container->getSettingsRepository();
         $settings = $settingsRepository->getSettings() ?? [];
 
@@ -28,7 +58,7 @@ function sendWelcomeEmail(ServiceContainer $container, array $userData, string $
         if (empty($smtpHost)) {
             return [
                 'success' => false,
-                'error' => 'SMTP is not configured. Please configure email settings first.',
+                'error' => 'Unable to send welcome email.',
             ];
         }
 
@@ -40,10 +70,18 @@ function sendWelcomeEmail(ServiceContainer $container, array $userData, string $
         $smtpFromEmail = $settings['smtp_from_email'] ?? '';
         $smtpFromName = $settings['smtp_from_name'] ?? 'Post Portal';
 
+        // SEC-08: Validate SMTP security policy before credential transmission
+        if (!validateSmtpSecurityPolicy($smtpAuth, $smtpSecure)) {
+            return [
+                'success' => false,
+                'error' => 'Unable to send welcome email.',
+            ];
+        }
+
         if (empty($smtpFromEmail)) {
             return [
                 'success' => false,
-                'error' => 'SMTP from email is not configured.',
+                'error' => 'Unable to send welcome email.',
             ];
         }
 
@@ -57,7 +95,6 @@ function sendWelcomeEmail(ServiceContainer $container, array $userData, string $
         }
 
         $userEmail = $userData['email'] ?? '';
-        $username = $userData['username'] ?? '';
         $firstName = $userData['first'] ?? '';
         $lastName = $userData['last'] ?? '';
         $displayName = trim($firstName . ' ' . $lastName) ?: $username;
@@ -65,14 +102,12 @@ function sendWelcomeEmail(ServiceContainer $container, array $userData, string $
         if (empty($userEmail)) {
             return [
                 'success' => false,
-                'error' => 'User email is required to send welcome email.',
+                'error' => 'Unable to send welcome email.',
             ];
         }
 
-        // Get site info
+        // Get site info using canonical URL
         $siteTitle = $settings['site_title'] ?? 'Post Portal';
-        $siteUrl = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https' : 'http')
-            . '://' . ($_SERVER['HTTP_HOST'] ?? 'localhost');
 
         // Build email body using Smarty template
         $emailView = ViewRenderer::fromSmarty(null, false)->getSmarty();
@@ -80,7 +115,7 @@ function sendWelcomeEmail(ServiceContainer $container, array $userData, string $
         $emailView->assign('site_url', $siteUrl);
         $emailView->assign('display_name', $displayName);
         $emailView->assign('username', $username);
-        $emailView->assign('password', $password);
+        $emailView->assign('activation_url', $activationUrl);
 
         $emailBody = $emailView->fetch('email_welcome.tpl');
         $emailAltBody = $emailView->fetch('email_welcome_text.tpl');
@@ -94,8 +129,9 @@ function sendWelcomeEmail(ServiceContainer $container, array $userData, string $
         $mail->SMTPDebug = $debugMode ? 3 : 0;
         $mail->Debugoutput = function ($str, $level) use ($debugMode): void {
             if ($debugMode) {
-                $logFile = '/var/www/html/logs/smtp.log';
-                @file_put_contents($logFile, date('Y-m-d H:i:s') . ' - ' . trim($str) . "\n", FILE_APPEND);
+                $logFile = getSmtpLogPath();
+                $redacted = redactSmtpDiagnostics($str);
+                @file_put_contents($logFile, date('Y-m-d H:i:s') . ' - ' . $redacted . "\n", FILE_APPEND);
             }
         };
 
@@ -103,7 +139,7 @@ function sendWelcomeEmail(ServiceContainer $container, array $userData, string $
         $mail->isSMTP();
         $mail->Host = $smtpHost;
         $mail->Port = $smtpPort;
-        $mail->Timeout = 10;
+        configureSmtpTransportSecurity($mail, 10);
 
         if ($smtpAuth) {
             $mail->SMTPAuth = true;
@@ -116,14 +152,6 @@ function sendWelcomeEmail(ServiceContainer $container, array $userData, string $
         if ($smtpSecure) {
             $mail->SMTPSecure = $smtpSecure;
         }
-
-        $mail->SMTPOptions = [
-            'ssl' => [
-                'verify_peer' => false,
-                'verify_peer_name' => false,
-                'allow_self_signed' => true,
-            ],
-        ];
 
         // Sender and recipient
         $mail->setFrom($smtpFromEmail, $smtpFromName);
@@ -140,20 +168,20 @@ function sendWelcomeEmail(ServiceContainer $container, array $userData, string $
 
         return ['success' => true];
     } catch (\PHPMailer\PHPMailer\Exception $e) {
-        error_log('Welcome email PHPMailer error: ' . $e->getMessage());
+        $msg = $e->getMessage();
+        $redacted = redactSmtpDiagnostics($msg);
+        error_log('Welcome email PHPMailer error: ' . $redacted);
         return [
             'success' => false,
-            'error' => 'Failed to send email: ' . $e->getMessage(),
-            'actionRequired' => 'configure_smtp',
-            'actionLabel' => 'Configure Email Settings',
+            'error' => 'Unable to send welcome email.',
         ];
     } catch (\Throwable $e) {
-        error_log('Welcome email error: ' . $e->getMessage());
+        $msg = $e->getMessage();
+        $redacted = redactSmtpDiagnostics($msg);
+        error_log('Welcome email error: ' . $redacted);
         return [
             'success' => false,
-            'error' => 'Failed to send email: ' . $e->getMessage(),
-            'actionRequired' => 'configure_smtp',
-            'actionLabel' => 'Configure Email Settings',
+            'error' => 'Unable to send welcome email.',
         ];
     }
 }
@@ -190,25 +218,57 @@ ApiHandler::handle(function (): void {
             requireCsrfToken();
             $payload = readJsonInput();
 
-            $sendEmail = isset($payload['send_email']) && $payload['send_email'] === true;
-            $password = $payload['password'] ?? ''; // Store before creating (will be hashed)
+              $sendEmail = isset($payload['send_email']) && $payload['send_email'] === true;
+              $payload['username'] = trim((string)($payload['username'] ?? ''));
+              if ($sendEmail) {
+                  unset($payload['password'], $payload['confirm_password']);
+              }
 
-            $result = $userService->createUser($payload);
-            if ($result['success']) {
-                $response = ['message' => $result['message'] ?? 'User created successfully'];
+             $result = $userService->createUser($payload);
+             if ($result['success']) {
+                 $response = ['message' => $result['message'] ?? 'User created successfully'];
 
-                // Send welcome email if requested
-                if ($sendEmail) {
-                    $emailResult = sendWelcomeEmail($container, $payload, $password);
-                    $response['email_sent'] = $emailResult['success'];
-                    if (!$emailResult['success']) {
-                        $response['email_error'] = $emailResult['error'];
-                    }
-                }
+                 // Send welcome email with activation link if requested
+                 if ($sendEmail) {
+                      $username = $payload['username'];
 
-                ErrorResponse::success($response);
-            }
-            ErrorResponse::unprocessableEntity($result['error'] ?? 'Failed to create user');
+                     // SEC-11: Issue activation token instead of using plaintext password
+                     $tokenResult = $userService->issueActivationToken($username);
+
+                      if ($tokenResult['success'] && isset($tokenResult['token'])
+                          && preg_match('/\A[a-f0-9]{64}\z/', $tokenResult['token']) === 1) {
+                          $token = $tokenResult['token'];
+
+                         // Build canonical activation URL
+                         try {
+                             require_once __DIR__ . '/../../functions.php';
+                              $activationUrl = getCanonicalAppUrl() . '/?' . http_build_query([
+                                  'page' => 'login',
+                                  'activate' => '1',
+                                  'username' => $username,
+                                  'token' => $token,
+                              ], '', '&', PHP_QUERY_RFC3986);
+
+                             $emailResult = sendWelcomeEmail($container, $payload, $activationUrl);
+                             $response['email_sent'] = $emailResult['success'];
+                             if (!$emailResult['success']) {
+                                  $response['email_error'] = 'Unable to send welcome email.';
+                             }
+                         } catch (\RuntimeException $e) {
+                             $response['email_sent'] = false;
+                              $response['email_error'] = 'Unable to send welcome email.';
+                              error_log('Activation URL generation failed');
+                         }
+                     } else {
+                         $response['email_sent'] = false;
+                          $response['email_error'] = 'Unable to send welcome email.';
+                          error_log('Activation token issuance failed');
+                     }
+                 }
+
+                 ErrorResponse::success($response);
+             }
+             ErrorResponse::unprocessableEntity($result['error'] ?? 'Failed to create user');
 
         case 'PUT':
             requireCsrfToken();

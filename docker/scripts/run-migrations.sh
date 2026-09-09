@@ -106,8 +106,10 @@ get_db_config() {
 # Load database configuration
 get_db_config
 
-# MySQL connection command
-MYSQL_CMD="mysql -h $DB_HOST -u $DB_USER -p$DB_PASSWORD $DB_NAME"
+# Keep credentials out of process arguments and preserve punctuation/whitespace.
+mysql_cmd() {
+    MYSQL_PWD="$DB_PASSWORD" mysql -h "$DB_HOST" -u "$DB_USER" "$DB_NAME" "$@"
+}
 
 # Function to execute SQL command with error handling
 execute_sql() {
@@ -120,7 +122,7 @@ execute_sql() {
         return 0
     fi
 
-    if ! $MYSQL_CMD -e "$sql" 2>/dev/null; then
+    if ! mysql_cmd -e "$sql" 2>/dev/null; then
         return 1
     fi
     return 0
@@ -130,7 +132,7 @@ execute_sql() {
 column_exists() {
     local table="$1"
     local column="$2"
-    local count=$($MYSQL_CMD -sNe "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA='$DB_NAME' AND TABLE_NAME='$table' AND COLUMN_NAME='$column'" 2>/dev/null || echo "0")
+    local count=$(mysql_cmd -sNe "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA='$DB_NAME' AND TABLE_NAME='$table' AND COLUMN_NAME='$column'" 2>/dev/null || echo "0")
     [ "$count" -gt 0 ]
 }
 
@@ -138,7 +140,7 @@ column_exists() {
 index_exists() {
     local table="$1"
     local index="$2"
-    local count=$($MYSQL_CMD -sNe "SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA='$DB_NAME' AND TABLE_NAME='$table' AND INDEX_NAME='$index'" 2>/dev/null || echo "0")
+    local count=$(mysql_cmd -sNe "SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA='$DB_NAME' AND TABLE_NAME='$table' AND INDEX_NAME='$index'" 2>/dev/null || echo "0")
     [ "$count" -gt 0 ]
 }
 
@@ -223,7 +225,7 @@ handle_migration_failure() {
         # Try to create and run recovery migration
         if create_recovery_migration "$filepath"; then
             local recovery_file="/tmp/recovery_$(basename "$filepath")"
-            if [ "$DRY_RUN" = "false" ] && $MYSQL_CMD < "$recovery_file" 2>/dev/null; then
+            if [ "$DRY_RUN" = "false" ] && mysql_cmd < "$recovery_file" 2>/dev/null; then
                 log "Recovery migration applied successfully"
                 rm -f "$recovery_file"
                 return 0
@@ -259,7 +261,7 @@ reset_database() {
     execute_sql "DELETE FROM migrations" "Clear migration history" || true
 
     # Drop all tables except migrations
-    local tables=$($MYSQL_CMD -sNe "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA='$DB_NAME' AND TABLE_NAME != 'migrations'" 2>/dev/null || echo "")
+    local tables=$(mysql_cmd -sNe "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA='$DB_NAME' AND TABLE_NAME != 'migrations'" 2>/dev/null || echo "")
 
     for table in $tables; do
         if execute_sql "DROP TABLE IF EXISTS \`$table\`" "Drop table $table"; then
@@ -279,21 +281,21 @@ reset_database() {
 # Function to check if migration exists in tracker
 migration_exists() {
     local filename="$1"
-    local count=$($MYSQL_CMD -sNe "SELECT COUNT(*) FROM migrations WHERE filename = '$filename'" 2>/dev/null || echo "0")
+    local count=$(mysql_cmd -sNe "SELECT COUNT(*) FROM migrations WHERE filename = '$filename'" 2>/dev/null || echo "0")
     [ "$count" -gt 0 ]
 }
 
 # Function to get stored checksum
 get_stored_checksum() {
     local filename="$1"
-    $MYSQL_CMD -sNe "SELECT checksum FROM migrations WHERE filename = '$filename'" 2>/dev/null || echo ""
+    mysql_cmd -sNe "SELECT checksum FROM migrations WHERE filename = '$filename'" 2>/dev/null || echo ""
 }
 
 # Function to record migration
 record_migration() {
     local filename="$1"
     local checksum="$2"
-    $MYSQL_CMD -e "INSERT INTO migrations (filename, checksum) VALUES ('$filename', '$checksum') ON DUPLICATE KEY UPDATE checksum='$checksum', applied_at=CURRENT_TIMESTAMP"
+    mysql_cmd -e "INSERT INTO migrations (filename, checksum) VALUES ('$filename', '$checksum') ON DUPLICATE KEY UPDATE checksum='$checksum', applied_at=CURRENT_TIMESTAMP"
 }
 
 # Function to calculate file checksum
@@ -304,14 +306,14 @@ get_checksum() {
 # Function to check if migration exists in tracker
 migration_exists() {
     local filename="$1"
-    local count=$($MYSQL_CMD -sNe "SELECT COUNT(*) FROM migrations WHERE filename = '$filename'" 2>/dev/null || echo "0")
+    local count=$(mysql_cmd -sNe "SELECT COUNT(*) FROM migrations WHERE filename = '$filename'" 2>/dev/null || echo "0")
     [ "$count" -gt 0 ]
 }
 
 # Function to get stored checksum
 get_stored_checksum() {
     local filename="$1"
-    $MYSQL_CMD -sNe "SELECT checksum FROM migrations WHERE filename = '$filename'" 2>/dev/null || echo ""
+    mysql_cmd -sNe "SELECT checksum FROM migrations WHERE filename = '$filename'" 2>/dev/null || echo ""
 }
 
 # Function to record migration
@@ -319,7 +321,7 @@ record_migration() {
     local filename="$1"
     local checksum="$2"
     if [ "$DRY_RUN" = "false" ]; then
-        $MYSQL_CMD -e "INSERT INTO migrations (filename, checksum) VALUES ('$filename', '$checksum') ON DUPLICATE KEY UPDATE checksum='$checksum', applied_at=CURRENT_TIMESTAMP"
+        mysql_cmd -e "INSERT INTO migrations (filename, checksum) VALUES ('$filename', '$checksum') ON DUPLICATE KEY UPDATE checksum='$checksum', applied_at=CURRENT_TIMESTAMP"
     fi
 }
 
@@ -332,10 +334,10 @@ run_migration() {
     log "Processing migration: $filename"
 
     # Check if migration tracker table exists, if not, create it
-    if ! $MYSQL_CMD -e "DESCRIBE migrations" >/dev/null 2>&1; then
+    if ! mysql_cmd -e "DESCRIBE migrations" >/dev/null 2>&1; then
         log "Creating migration tracker table..."
         if [ "$DRY_RUN" = "false" ]; then
-            $MYSQL_CMD < "$MIGRATION_DIR/00-migration-tracker.sql"
+            mysql_cmd < "$MIGRATION_DIR/00-migration-tracker.sql"
         else
             info "DRY RUN: Would create migration tracker table"
         fi
@@ -397,7 +399,7 @@ run_migration() {
         # Capture both stdout and stderr for error analysis
         local output
         local exit_code=0
-        output=$($MYSQL_CMD < "$filepath" 2>&1) || exit_code=$?
+        output=$(mysql_cmd < "$filepath" 2>&1) || exit_code=$?
 
         if [ $exit_code -ne 0 ]; then
             # Check if error is an idempotent/ignorable error
@@ -463,7 +465,7 @@ for migration_file in $migration_files; do
     status="PENDING"
 
     # Check if migration tracker table exists first
-    if $MYSQL_CMD -e "DESCRIBE migrations" >/dev/null 2>&1; then
+    if mysql_cmd -e "DESCRIBE migrations" >/dev/null 2>&1; then
         if migration_exists "$filename"; then
             stored_checksum=$(get_stored_checksum "$filename")
             current_checksum=$(get_checksum "$migration_file")

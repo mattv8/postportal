@@ -55,11 +55,11 @@
         {if !$post.hero_title_overlay|default:1 || !($jpg_srcset || $webp_srcset)}
           <h5 class="card-title">{$post.title|escape}</h5>
         {/if}
-        {if $post.author_first || $post.author_last}
-          <p class="text-muted small mb-2">
-            <em>By {if $post.author_first}{$post.author_first}{/if} {if $post.author_last}{$post.author_last}{/if}</em>
-          </p>
-        {/if}
+         {if $post.author_first || $post.author_last}
+           <p class="text-muted small mb-2">
+             <em>By {if $post.author_first}{$post.author_first|escape:'html'}{/if} {if $post.author_last}{$post.author_last|escape:'html'}{/if}</em>
+           </p>
+         {/if}
         <div class="card-text post-preview-content">{$post.body_html nofilter}</div>
         <div class="d-flex justify-content-between align-items-center">
           {if !$is_authenticated|default:false}
@@ -81,7 +81,7 @@
                 {/if}
               </div>
             {/if}
-            {if $is_authenticated|default:false}
+            {if $is_admin|default:false}
               <div class="btn-group" role="group">
                 <button class="btn btn-sm btn-outline-secondary btn-edit-post-home" data-post-id="{$post.id}" title="Edit post">
                   <i class="bi bi-pencil"></i> Edit

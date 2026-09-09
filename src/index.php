@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use PostPortal\Container\ServiceContainer;
+use PostPortal\Http\SessionPolicy;
 use PostPortal\Http\ViewRenderer;
 use PostPortal\Page\AdminPage;
 use PostPortal\Page\HomePage;
@@ -23,8 +24,18 @@ $defaultPage = $defaults['default_page'];
 $defaultLogo = $defaults['default_logo'];
 $jsConfig = $defaults['js_config'];
 
-// Determine requested page and defaults.
-$page = $_GET['page'] ?? $defaultPage;
+// Fixed route map: only allow known routes before any data construction.
+$allowedRoutes = ['home', 'post', 'login', 'admin'];
+$requestedPage = $_GET['page'] ?? $defaultPage;
+
+// Reject unknown routes with 404 before building page data.
+if (!in_array($requestedPage, $allowedRoutes, true)) {
+	http_response_code(404);
+	echo 'Not found';
+	exit;
+}
+
+$page = $requestedPage;
 
 // Only start session if:
 // 1. User already has a session cookie (returning/authenticated user), OR
@@ -32,11 +43,12 @@ $page = $_GET['page'] ?? $defaultPage;
 // This allows anonymous home page visits to be cached by nginx
 $needsSession = isset($_COOKIE[session_name()]) || in_array($page, ['login', 'admin'], true);
 if ($needsSession) {
+    SessionPolicy::apply();
     ensureSession();
 }
 
 $isAuthenticated = $needsSession && !empty($_SESSION['authenticated']);
-$isAdmin = $needsSession && !empty($_SESSION['isadmin']);
+$isAdmin = $needsSession && ($_SESSION['isadmin'] ?? null) === true;
 
 // Build common services.
 $db = getDefaultDbConnection();
@@ -105,6 +117,8 @@ switch ($page) {
 		];
 		break;
 
+	case 'home':
+	case 'post':
 	default:
 		$homePage = new HomePage($container, $db, $defaultLogo);
 		$pageData = $homePage->build();

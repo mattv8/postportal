@@ -20,21 +20,24 @@
 </head>
 <body>
     <div class="header">
-        <h1>Welcome to {$site_title}!</h1>
+        <h1>Welcome to {$site_title|escape:'html'}!</h1>
     </div>
     <div class="content">
-        <p>Hello {$display_name},</p>
-        <p>Your account has been created. Here are your login credentials:</p>
+        <p>Hello {$display_name|escape:'html'},</p>
+        <p>Your account has been created on {$site_title|escape:'html'}. Please activate your account by clicking the link below:</p>
         <div class="credentials">
-            <p><strong>Username:</strong> {$username}</p>
-            <p><strong>Password:</strong> {$password}</p>
-        </div>
-        <div class="warning">
-            <strong>Important:</strong> Please change your password after your first login for security.
+            <p><strong>Username:</strong> {$username|escape:'html'}</p>
         </div>
         <p style="text-align: center;">
-            <a href="{$site_url}" class="cta-button">Login to {$site_title}</a>
+            <a href="{$activation_url|escape:'html'}" class="cta-button">Activate Your Account</a>
         </p>
+        <p>If the button above does not work, copy and paste this link into your browser:</p>
+        <p style="word-break: break-all; font-family: monospace; font-size: 12px; color: #666;">
+            {$activation_url|escape:'html'}
+        </p>
+        <div class="warning">
+            <strong>Note:</strong> This activation link will expire after a set period for security reasons. Please activate your account promptly.
+        </div>
     </div>
     <div class="footer">
         <p>This email was sent automatically. Please do not reply.</p>

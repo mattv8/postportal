@@ -1,6 +1,13 @@
 (function () {
   'use strict';
 
+  // SEC-11: Detect and handle activation mode from URL parameters
+  // Contract: /?page=login&activate=1&username=<urlencoded>&token=<urlencoded>
+  const urlParams = new URLSearchParams(window.location.search);
+  const activationMode = urlParams.get('activate') === '1';
+  const activationUsername = urlParams.get('username') || '';
+  const activationToken = urlParams.get('token') || '';
+
   function setBanner(message, type) {
     const banner = document.getElementById('auth-banner');
     const text = document.getElementById('auth-banner-text');
@@ -10,6 +17,39 @@
     banner.classList.add(`alert-${type || 'danger'}`);
     text.textContent = message;
     banner.style.display = 'block';
+  }
+
+  function setupActivationMode() {
+    // Show/hide password confirmation field for activation
+    const confirmField = document.getElementById('password-confirm-field');
+    const usernameInput = document.getElementById('username');
+    const submitBtn = document.getElementById('login-submit-btn');
+
+    if (activationMode && activationUsername && activationToken) {
+      // Set username to read-only
+      if (usernameInput) {
+        usernameInput.value = decodeURIComponent(activationUsername);
+        usernameInput.readOnly = true;
+      }
+
+      // Show password confirmation field
+      if (confirmField) {
+        confirmField.style.display = 'block';
+      }
+
+      // Change button text
+      if (submitBtn) {
+        submitBtn.textContent = 'Set Password & Activate Account';
+      }
+    } else {
+      // Login mode: hide password confirmation
+      if (confirmField) {
+        confirmField.style.display = 'none';
+      }
+      if (submitBtn) {
+        submitBtn.textContent = 'Sign In';
+      }
+    }
   }
 
   function getRecaptchaToken() {
@@ -45,10 +85,45 @@
 
     if (button) {
       button.disabled = true;
-      button.textContent = 'Signing in...';
+      button.textContent = activationMode ? 'Activating...' : 'Signing in...';
     }
 
     try {
+      // SEC-11: If in activation mode, POST to /api/auth/activate.php
+      if (activationMode && activationToken) {
+        const passwordConfirmInput = document.getElementById('password-confirm');
+        const passwordConfirm = passwordConfirmInput?.value || '';
+
+        if (password !== passwordConfirm) {
+          setBanner('Passwords do not match.', 'warning');
+          return;
+        }
+
+        const response = await fetch('/api/auth/activate.php', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            username: activationUsername,
+            token: activationToken,
+            password: password,
+            password_confirm: passwordConfirm,
+          }),
+        });
+
+        const payload = await response.json().catch(() => ({}));
+        if (response.ok && payload.success) {
+          setBanner('Account activated successfully! Redirecting to login...', 'success');
+          setTimeout(() => {
+            window.location = '/?page=login';
+          }, 2000);
+          return;
+        }
+
+        setBanner('Activation failed. Please try again or contact support.', 'danger');
+        return;
+      }
+
+      // Normal login mode
       const recaptchaToken = await getRecaptchaToken().catch((err) => {
         setBanner('Unable to verify reCAPTCHA. Please try again.', 'danger');
         throw err;
@@ -74,14 +149,48 @@
     } finally {
       if (button) {
         button.disabled = false;
-        button.textContent = 'Submit';
+        button.textContent = activationMode ? 'Set Password & Activate Account' : 'Sign In';
       }
     }
   }
 
+  // Initialize activation mode on page load
+  function initializePage() {
+    setupActivationMode();
+
+    // Setup form submission
+    const form = document.querySelector('form');
+    if (form) {
+      form.addEventListener('submit', (e) => {
+        e.preventDefault();
+        const btn = form.querySelector('button[type="submit"]');
+        handleLogin(btn);
+      });
+    }
+
+    // Also allow clicking on button directly
+    window.handleLogin = handleLogin;
+  }
+
+  // Run on DOM ready
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initializePage);
+  } else {
+    initializePage();
+  }
+
   async function logoff() {
     try {
-      await fetch('/api/logout.php', { method: 'POST' });
+      // SEC-09: Include CSRF token for logout request
+      const csrfToken = (document.querySelector('meta[name="csrf-token"]') || {}).content || '';
+      await fetch('/api/logout.php', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-CSRF-Token': csrfToken,
+        },
+        credentials: 'same-origin',
+      });
     } catch (error) {
       // Ignore network errors; we still redirect to login.
     } finally {

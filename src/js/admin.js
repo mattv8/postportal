@@ -1409,29 +1409,84 @@
           (p.title || '(untitled)') :
           (p.title_draft || p.title || '(untitled)');
 
-        // Create toggle switch HTML
-        const toggleHtml = `
-          <div class="form-check form-switch">
-            <input class="form-check-input publish-toggle" type="checkbox"
-              data-id="${p.id}" ${isPublished ? 'checked' : ''}>
-            <label class="form-check-label small text-muted">
-              ${isPublished ? publishedDate : 'Draft'}
-            </label>
-          </div>
-        `;
+         // Validate post ID before use
+         const postId = parseInt(p.id, 10);
+         if (isNaN(postId)) {
+           console.error('Invalid post ID:', p.id);
+           return;
+         }
 
-        tr.innerHTML = `
-          <td>${p.id}</td>
-          <td>${displayTitle}</td>
-          <td class="text-muted small">${authorName}</td>
-          <td>${toggleHtml}</td>
-          <td class="text-nowrap">${p.created_at}</td>
-          <td class="text-nowrap">
-            <button class="btn btn-sm btn-outline-primary btn-edit-post" data-id="${p.id}" data-bs-toggle="modal" data-bs-target="#postEditorModal">Edit</button>
-            ${isPublished ? `<button class="btn btn-sm btn-outline-info btn-resend-email" data-id="${p.id}" title="Resend email notification to all active subscribers (sends duplicates)"><i class="bi bi-envelope"></i> Resend to All</button>` : ''}
-            <button class="btn btn-sm btn-outline-danger" data-del="${p.id}">Delete</button>
-          </td>
-        `;
+         // Create table cells with safe text content for plain-text fields
+         const idCell = document.createElement('td');
+         idCell.textContent = postId.toString();
+         tr.appendChild(idCell);
+
+         const titleCell = document.createElement('td');
+         titleCell.textContent = displayTitle;
+         tr.appendChild(titleCell);
+
+         const authorCell = document.createElement('td');
+         authorCell.className = 'text-muted small';
+         authorCell.textContent = authorName;
+         tr.appendChild(authorCell);
+
+         // Create toggle cell with DOM methods (no innerHTML)
+         const toggleCell = document.createElement('td');
+         const formDiv = document.createElement('div');
+         formDiv.className = 'form-check form-switch';
+
+         const toggleInput = document.createElement('input');
+         toggleInput.className = 'form-check-input publish-toggle';
+         toggleInput.type = 'checkbox';
+         toggleInput.setAttribute('data-id', postId.toString());
+         if (isPublished) {
+           toggleInput.checked = true;
+         }
+         formDiv.appendChild(toggleInput);
+
+         const toggleLabel = document.createElement('label');
+         toggleLabel.className = 'form-check-label small text-muted';
+         toggleLabel.textContent = isPublished ? publishedDate : 'Draft';
+         formDiv.appendChild(toggleLabel);
+
+         toggleCell.appendChild(formDiv);
+         tr.appendChild(toggleCell);
+
+         const createdCell = document.createElement('td');
+         createdCell.className = 'text-nowrap';
+         createdCell.textContent = p.created_at;
+         tr.appendChild(createdCell);
+
+         // Create actions cell with safe DOM methods
+         const actionsCell = document.createElement('td');
+        actionsCell.className = 'text-nowrap';
+
+        const editBtn = document.createElement('button');
+        editBtn.className = 'btn btn-sm btn-outline-primary btn-edit-post';
+        editBtn.setAttribute('data-id', postId.toString());
+        editBtn.setAttribute('data-bs-toggle', 'modal');
+        editBtn.setAttribute('data-bs-target', '#postEditorModal');
+        editBtn.textContent = 'Edit';
+        actionsCell.appendChild(editBtn);
+
+        if (isPublished) {
+          actionsCell.appendChild(document.createTextNode(' '));
+          const resendBtn = document.createElement('button');
+          resendBtn.className = 'btn btn-sm btn-outline-info btn-resend-email';
+          resendBtn.setAttribute('data-id', postId.toString());
+          resendBtn.setAttribute('title', 'Resend email notification to all active subscribers (sends duplicates)');
+          resendBtn.innerHTML = '<i class="bi bi-envelope"></i> Resend to All';
+          actionsCell.appendChild(resendBtn);
+        }
+
+        actionsCell.appendChild(document.createTextNode(' '));
+        const deleteBtn = document.createElement('button');
+        deleteBtn.className = 'btn btn-sm btn-outline-danger';
+        deleteBtn.setAttribute('data-del', postId.toString());
+        deleteBtn.textContent = 'Delete';
+        actionsCell.appendChild(deleteBtn);
+
+        tr.appendChild(actionsCell);
         tbody.appendChild(tr);
       });
       table.appendChild(tbody);
@@ -2005,7 +2060,10 @@
         } catch (e) {
           img.src = '/storage/uploads/originals/' + m.filename;
         }
-        const body = document.createElement('div'); body.className = 'card-body'; body.innerHTML = `<small>${m.original_filename}</small>`;
+        const body = document.createElement('div'); body.className = 'card-body';
+        const filenameLabel = document.createElement('small');
+        filenameLabel.textContent = m.original_filename;
+        body.appendChild(filenameLabel);
 
         // Add trash icon button (hidden by default, shows on hover)
         const deleteBtn = document.createElement('button');
@@ -3173,14 +3231,21 @@
       const item = document.createElement('div');
       item.className = 'gallery-item';
       item.draggable = true;
-      item.dataset.mediaId = mediaId;
-      item.innerHTML = `
-        <img src="${thumbUrl}" alt="${mediaData?.alt_text || ''}" />
-        <button type="button" class="btn btn-danger btn-sm btn-remove-gallery-item">&times;</button>
-      `;
+      item.dataset.mediaId = parseInt(mediaId, 10);
+
+      const img = document.createElement('img');
+      img.src = thumbUrl;
+      img.alt = mediaData?.alt_text || '';
+      item.appendChild(img);
+
+      const removeBtn = document.createElement('button');
+      removeBtn.type = 'button';
+      removeBtn.className = 'btn btn-danger btn-sm btn-remove-gallery-item';
+      removeBtn.textContent = '×';
+      item.appendChild(removeBtn);
 
       // Remove handler
-      item.querySelector('.btn-remove-gallery-item').addEventListener('click', function () {
+      removeBtn.addEventListener('click', function () {
         const idx = galleryMediaIds.indexOf(parseInt(mediaId));
         if (idx > -1) galleryMediaIds.splice(idx, 1);
         item.remove();
@@ -3213,14 +3278,21 @@
       const item = document.createElement('div');
       item.className = 'gallery-item';
       item.draggable = true;
-      item.dataset.mediaId = mediaId;
-      item.innerHTML = `
-        <img src="${thumbUrl}" alt="${mediaData?.alt_text || ''}" />
-        <button type="button" class="btn btn-danger btn-sm btn-remove-gallery-item">&times;</button>
-      `;
+      item.dataset.mediaId = parseInt(mediaId, 10);
+
+      const img = document.createElement('img');
+      img.src = thumbUrl;
+      img.alt = mediaData?.alt_text || '';
+      item.appendChild(img);
+
+      const removeBtn = document.createElement('button');
+      removeBtn.type = 'button';
+      removeBtn.className = 'btn btn-danger btn-sm btn-remove-gallery-item';
+      removeBtn.textContent = '×';
+      item.appendChild(removeBtn);
 
       // Remove handler
-      item.querySelector('.btn-remove-gallery-item').addEventListener('click', function () {
+      removeBtn.addEventListener('click', function () {
         const idx = galleryMediaIds.indexOf(parseInt(mediaId));
         if (idx > -1) galleryMediaIds.splice(idx, 1);
         item.remove();

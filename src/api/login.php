@@ -49,12 +49,12 @@ function verifyRecaptchaToken(string $token, string $secret): bool
     }
 
     $decoded = json_decode($raw, true);
-    return (bool)($decoded['success'] ?? false);
+    return is_array($decoded) && isValidRecaptchaLoginAssessment($decoded);
 }
 
 ApiHandler::handle(function (): void {
-    // Login doesn't require auth, but we need the DB connection
-    ['db' => $db] = bootstrapApi();
+    // Login doesn't require auth, but we need the DB connection and services
+    ['container' => $container, 'db' => $db] = bootstrapApi();
 
     if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
         ErrorResponse::json(405, 'Method not allowed');
@@ -67,6 +67,22 @@ ApiHandler::handle(function (): void {
 
     if ($username === '' || $password === '') {
         ErrorResponse::badRequest('Username and password are required.');
+    }
+
+    // SEC-10: Server-side login throttling - check BEFORE password verification
+    $userRepository = $container->getUserRepository();
+
+    // Create throttle scope keys: source IP and normalized username
+    // Repository will HMAC these; we pass raw values for privacy
+    $sourceIp = $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
+    // Note: X-Forwarded-For trust depends on deployment topology (reverse proxy)
+    // Workstream 0 should handle canonical APP_URL and proxy configuration
+
+    $throttleCheck = $userRepository->checkLoginThrottle($sourceIp, strtolower($username));
+    if (!$throttleCheck['allowed']) {
+        $retryAfter = $throttleCheck['retry_after'] ?? 60;
+        header('Retry-After: ' . $retryAfter);
+        ErrorResponse::json(429, 'Too many login attempts. Please try again later.');
     }
 
     // Validate reCAPTCHA (if configured)
@@ -86,11 +102,21 @@ ApiHandler::handle(function (): void {
     $result = mysqli_stmt_get_result($stmt);
     $user = $result ? mysqli_fetch_assoc($result) : null;
 
+    // Generic response for both nonexistent and wrong password (don't reveal account existence)
     if (!$user || (int)$user['active'] !== 1 || !password_verify($password, (string)$user['password'])) {
+        // Record failed attempt for throttling (generic response for all failures)
+        $userRepository->recordLoginAttempt($sourceIp, strtolower($username));
         ErrorResponse::unauthorized('Invalid username or password.');
     }
 
-    // Set session flags
+    // Clear throttle records after successful login
+    $userRepository->clearLoginAttempts($sourceIp, strtolower($username));
+
+    // SEC-09: Session rotation - regenerate ID with deletion of old session
+    // This prevents session fixation attacks
+    session_regenerate_id(true);
+
+    // Set session flags - VAL-01: Fail-closed admin check (explicit true required)
     $_SESSION['authenticated'] = true;
     $_SESSION['username'] = $user['username'];
     $_SESSION['isadmin'] = (bool)($user['isadmin'] ?? false);

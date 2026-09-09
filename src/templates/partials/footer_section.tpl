@@ -1,7 +1,7 @@
 {* Footer Section - Displays site footer with configurable layout and optional background *}
 {if $settings.show_footer}
 <footer class="mt-4 border-top position-relative rounded-3" style="overflow: hidden; {if $settings.footer_media_id}padding: 0;{else}padding: 1.5rem 0;{/if}">
-  {if $is_authenticated|default:false}
+  {if $is_admin|default:false}
     <button class="btn btn-sm btn-light btn-edit-section position-absolute top-0 end-0 m-2" style="z-index: 10;" data-bs-toggle="modal" data-bs-target="#editFooterModal" title="Edit Footer">
       <i class="bi bi-pencil"></i> Edit
     </button>

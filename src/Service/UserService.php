@@ -77,25 +77,20 @@ class UserService implements UserServiceInterface
 
     /**
      * @inheritDoc
+     * SEC-11: For email-activated accounts, ignore admin password and use random unusable hash.
      */
     public function createUser(array $data): array
     {
         try {
             // Validate required fields
             $username = trim((string)($data['username'] ?? ''));
-            $password = (string)($data['password'] ?? '');
+            $email = trim((string)($data['email'] ?? ''));
+            $sendEmail = filter_var(($data['send_email'] ?? false), FILTER_VALIDATE_BOOLEAN);
 
             if ($username === '') {
                 return [
                     'success' => false,
                     'error' => 'Username is required',
-                ];
-            }
-
-            if ($password === '') {
-                return [
-                    'success' => false,
-                    'error' => 'Password is required',
                 ];
             }
 
@@ -116,12 +111,31 @@ class UserService implements UserServiceInterface
             }
 
             // Validate email if provided
-            $email = trim((string)($data['email'] ?? ''));
             if ($email !== '' && !filter_var($email, FILTER_VALIDATE_EMAIL)) {
                 return [
                     'success' => false,
                     'error' => 'Invalid email address',
                 ];
+            }
+
+            // SEC-11: For email-activated accounts, ignore admin password
+            if ($sendEmail) {
+                // Generate cryptographically random unusable password
+                $unusablePassword = bin2hex(random_bytes(32));
+                $data['password'] = $unusablePassword;
+                // Force account to inactive until activation token is redeemed
+                $data['active'] = 0;
+                // Ensure no plaintext password is retained
+                unset($data['confirm_password']);
+            } else {
+                // Direct account creation requires password
+                $password = (string)($data['password'] ?? '');
+                if ($password === '') {
+                    return [
+                        'success' => false,
+                        'error' => 'Password is required',
+                    ];
+                }
             }
 
             $result = $this->userRepository->create($data);
@@ -316,6 +330,23 @@ class UserService implements UserServiceInterface
             return [
                 'success' => false,
                 'error' => 'Failed to delete user',
+            ];
+        }
+    }
+
+    /**
+     * @inheritDoc
+     * SEC-11: Issue a one-time activation token
+     */
+    public function issueActivationToken(string $username): array
+    {
+        try {
+            return $this->userRepository->issueActivationToken($username);
+        } catch (\Throwable $e) {
+            error_log('UserService::issueActivationToken error: ' . $e->getMessage());
+            return [
+                'success' => false,
+                'error' => 'Failed to issue activation token',
             ];
         }
     }

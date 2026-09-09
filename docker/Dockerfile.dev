@@ -78,9 +78,11 @@ RUN mkdir -p /var/www/html \
     && mkdir -p /var/www/html/storage/uploads/variants/800 \
     && mkdir -p /var/www/html/storage/uploads/variants/1600 \
     && mkdir -p /var/www/html/storage/uploads/variants/thumbnail \
-    && mkdir -p /var/www/log \
+    && mkdir -p /var/log/postportal \
     && touch /var/www/html/index.php \
     && chown -R www-data:www-data /var/www/html \
+    && chown www-data:www-data /var/log/postportal \
+    && chmod 750 /var/log/postportal \
     && chmod -R 775 /var/www/html/storage
 
 # Copy nginx configuration
@@ -93,6 +95,7 @@ COPY migrations/ /docker-migrations/
 # Copy initialization and migration scripts
 COPY docker/scripts/init-database.sh /docker-scripts/init-database.sh
 COPY docker/scripts/run-migrations.sh /docker-scripts/run-migrations.sh
+COPY docker/scripts/validate-environment.sh /docker-scripts/validate-environment.sh
 COPY docker/scripts/import-database.sh /docker-scripts/import-database.sh
 COPY docker/scripts/demo-reset.sh /docker-scripts/demo-reset.sh
 COPY docker/scripts/cache-purge.sh /docker-scripts/cache-purge.sh
@@ -106,7 +109,7 @@ RUN ln -sf /docker-scripts/import-database.sh /usr/local/bin/import \
 
 COPY <<EOF /usr/local/bin/export
 #!/bin/bash
-mysqldump -u"\$MYSQL_USER" -p"\$MYSQL_PASSWORD" "\$MYSQL_DATABASE" "\$@"
+MYSQL_PWD="\$MYSQL_PASSWORD" mysqldump -u"\$MYSQL_USER" "\$MYSQL_DATABASE" "\$@"
 EOF
 
 COPY <<EOF /usr/local/bin/drop

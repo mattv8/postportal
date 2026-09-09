@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use PostPortal\Container\ServiceContainer;
 use PostPortal\Http\ErrorResponse;
+use PostPortal\Http\SessionPolicy;
 
 require_once __DIR__ . '/../functions.php';
 
@@ -15,6 +16,8 @@ require_once __DIR__ . '/../Repository/MediaRepositoryInterface.php';
 require_once __DIR__ . '/../Repository/MediaRepository.php';
 require_once __DIR__ . '/../Repository/NewsletterRepositoryInterface.php';
 require_once __DIR__ . '/../Repository/NewsletterRepository.php';
+require_once __DIR__ . '/../Repository/NewsletterThrottleRepositoryInterface.php';
+require_once __DIR__ . '/../Repository/NewsletterThrottleRepository.php';
 require_once __DIR__ . '/../Repository/SettingsRepositoryInterface.php';
 require_once __DIR__ . '/../Repository/SettingsRepository.php';
 require_once __DIR__ . '/../Repository/UserRepositoryInterface.php';
@@ -35,7 +38,11 @@ require_once __DIR__ . '/../Service/UserService.php';
 // Container and HTTP helpers
 require_once __DIR__ . '/../Container/ServiceContainer.php';
 require_once __DIR__ . '/../Http/ErrorResponse.php';
+require_once __DIR__ . '/../Http/SessionPolicy.php';
 require_once __DIR__ . '/../Http/ApiHandler.php';
+
+// Security helpers
+require_once __DIR__ . '/../Security/HmacPrivacyKey.php';
 
 /**
  * Initialize API execution context with shared behaviors (headers, session, auth, DB, services).
@@ -45,13 +52,16 @@ require_once __DIR__ . '/../Http/ApiHandler.php';
 function bootstrapApi(bool $requireAuth = false, bool $requireAdmin = false): array
 {
     header('Content-Type: application/json');
+    // SEC-09: Apply session policy before first session_start
+    SessionPolicy::apply();
     ensureSession();
 
     if ($requireAuth && (empty($_SESSION['authenticated']) || empty($_SESSION['username']))) {
         ErrorResponse::unauthorized('Unauthorized');
     }
 
-    if ($requireAdmin && isset($_SESSION['isadmin']) && !$_SESSION['isadmin']) {
+    // VAL-01: Fail-closed admin check - require explicit isadmin === true
+    if ($requireAdmin && (!isset($_SESSION['isadmin']) || $_SESSION['isadmin'] !== true)) {
         ErrorResponse::forbidden('Forbidden');
     }
 

@@ -12,7 +12,10 @@ use Intervention\Image\ImageManager;
  * Handles image uploads, optimization, and responsive variant generation
  */
 
-require_once(__DIR__ . '/../vendor/autoload.php');
+// Conditionally load Composer autoload only if not already loaded
+if (!class_exists('Composer\\Autoload\\ClassLoader', false)) {
+    require_once(__DIR__ . '/../vendor/autoload.php');
+}
 
 class MediaProcessor
 {

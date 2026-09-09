@@ -5,7 +5,10 @@ declare(strict_types=1);
 /*
     Custom PHP Functions
 */
-require_once(__DIR__ . '/vendor/autoload.php'); // Composer autoload
+// Conditionally load Composer autoload only if not already loaded
+if (!class_exists('Composer\\Autoload\\ClassLoader', false)) {
+    require_once(__DIR__ . '/vendor/autoload.php'); // Composer autoload
+}
 require_once(__DIR__ . '/lib/MediaProcessor.php');
 require_once(__DIR__ . '/Http/ViewRenderer.php');
 
@@ -52,6 +55,21 @@ function getAppDefaults(): array
 }
 
 /**
+ * Determine whether a Google reCAPTCHA v3 assessment permits a login.
+ *
+ * @param array<string,mixed> $assessment Google siteverify response
+ */
+function isValidRecaptchaLoginAssessment(array $assessment): bool
+{
+    $score = $assessment['score'] ?? null;
+
+    return ($assessment['success'] ?? false) === true
+        && ($assessment['action'] ?? null) === 'login'
+        && is_numeric($score)
+        && (float) $score >= 0.5;
+}
+
+/**
  * Read database configuration from environment.
  *
  * @return array{host:string,user:string,password:string,database:string}
@@ -74,6 +92,81 @@ function getDefaultDbConnection(): ?\mysqli
     $cfg = getDbConfig();
     return getDbConnection($cfg['host'], $cfg['user'], $cfg['password'], $cfg['database']);
 }
+
+/**
+ * Get canonical application URL.
+ * Requires APP_URL environment variable with absolute http/https URL.
+ * Validates: no credentials, no query string, no fragment, no control characters.
+ * Does not trust request headers.
+ * Normalizes to no trailing slash.
+ *
+ * @return string Canonical URL (e.g., "https://example.com" or "https://example.com:8080/app")
+ * @throws RuntimeException If URL is missing, invalid, or malformed
+ */
+function getCanonicalAppUrl(): string
+{
+    $url = getenv('APP_URL');
+    if ($url === false || $url === '') {
+        throw new RuntimeException('APP_URL environment variable is required');
+    }
+
+    // Reject control characters (null bytes, newlines, etc.)
+    if (preg_match('/[\x00-\x1f\x7f-\x9f]/', $url)) {
+        throw new RuntimeException('APP_URL contains invalid control characters');
+    }
+
+    // Parse URL
+    $parts = parse_url($url);
+    if ($parts === false) {
+        throw new RuntimeException('APP_URL is not a valid URL');
+    }
+
+    // Require scheme
+    if (!isset($parts['scheme'])) {
+        throw new RuntimeException('APP_URL must include a scheme (http or https)');
+    }
+
+    $scheme = strtolower($parts['scheme']);
+    if ($scheme !== 'http' && $scheme !== 'https') {
+        throw new RuntimeException('APP_URL scheme must be http or https');
+    }
+
+    // Require host
+    if (!isset($parts['host']) || $parts['host'] === '') {
+        throw new RuntimeException('APP_URL must include a host');
+    }
+
+    // Reject credentials in URL
+    if (isset($parts['user']) || isset($parts['pass'])) {
+        throw new RuntimeException('APP_URL must not contain credentials (user:pass)');
+    }
+
+    // Reject query string
+    if (isset($parts['query'])) {
+        throw new RuntimeException('APP_URL must not contain a query string');
+    }
+
+    // Reject fragment
+    if (isset($parts['fragment'])) {
+        throw new RuntimeException('APP_URL must not contain a fragment');
+    }
+
+    // Rebuild URL: scheme://host[:port][/path]
+    $canonical = $scheme . '://' . $parts['host'];
+
+    // Add port if present and not default
+    if (isset($parts['port'])) {
+        $canonical .= ':' . $parts['port'];
+    }
+
+    // Add path if present (strip trailing slashes)
+    if (isset($parts['path']) && $parts['path'] !== '/' && $parts['path'] !== '') {
+        $canonical .= rtrim($parts['path'], '/');
+    }
+
+    return $canonical;
+}
+
 
 /**
  * Format a datetime string from the database (assumed UTC) to the configured timezone.
@@ -187,140 +280,223 @@ function purgeFastCgiCache(): bool
 }
 
 /**
- * Basic HTML sanitization with allowlist and attribute scrubbing
- * Allows empty HTML content - returns empty string for empty inputs
- * This ensures users can erase default content if desired
+ * Sanitize HTML content using a strict DOM allowlist
+ * Parses HTML, removes all attributes by default, then restores only safe tag-specific attributes
+ * Detects and removes event handlers, executable schemes, dangerous attributes from all tags
+ * Output is idempotent: sanitizing sanitized HTML produces the same result
  *
  * @param string $html HTML content to sanitize (can be empty)
  * @return string Sanitized HTML (empty string if input is empty)
  */
 function sanitizeHtml(string $html): string
 {
-    // Allow a safe subset of tags (including both <em> and <i> for italic formatting)
-    $allowed_tags = '<p><br><strong><b><em><i><u><ol><ul><li><blockquote><code><pre><a><h1><h2><h3><h4><h5><h6><img><figure><figcaption><hr><span><div>';
-    $clean = strip_tags($html, $allowed_tags);
-
-    // Remove event handlers and javascript: URLs (quick pass)
-    // Remove on* attributes
-    $clean = preg_replace('/\son[a-z]+\s*=\s*"[^"]*"/i', '', $clean);
-    $clean = preg_replace("/\son[a-z]+\s*='[^']*'/i", '', $clean);
-    // Remove javascript: URLs in href/src
-    $clean = preg_replace('/(href|src)\s*=\s*"javascript:[^"]*"/i', '$1="#"', $clean);
-    $clean = preg_replace("/(href|src)\s*=\s*'javascript:[^']*'/i", '$1="#"', $clean);
-
-    // Deep sanitize anchors and images using DOM to preserve allowed attributes safely
-    if (trim($clean) === '') {
-        return $clean;
+    if (trim($html) === '') {
+        return '';
     }
 
     $prevUseInternalErrors = libxml_use_internal_errors(true);
     $dom = new DOMDocument('1.0', 'UTF-8');
-    // Properly load UTF-8 HTML without converting to HTML entities
-    // Prepend UTF-8 XML declaration to ensure proper encoding handling
-    $wrappedHtml = '<?xml encoding="UTF-8"><div>' . $clean . '</div>';
+
+    // Load HTML with wrapper div to handle fragments
+    $wrappedHtml = '<?xml encoding="UTF-8"><div>' . $html . '</div>';
     $dom->loadHTML($wrappedHtml, LIBXML_HTML_NOIMPLIED | LIBXML_HTML_NODEFDTD);
 
-    // Allowed alignment classes from Quill
+    // Define allowed elements and their safe attributes
+    $allowedElements = [
+        'p' => ['class'],
+        'br' => [],
+        'strong' => ['class'],
+        'b' => ['class'],
+        'em' => ['class'],
+        'i' => ['class'],
+        'u' => ['class'],
+        'ol' => ['class'],
+        'ul' => ['class'],
+        'li' => ['class'],
+        'blockquote' => ['class'],
+        'code' => ['class'],
+        'pre' => ['class'],
+        'a' => ['href', 'class', 'rel', 'target'],
+        'h1' => ['class'],
+        'h2' => ['class'],
+        'h3' => ['class'],
+        'h4' => ['class'],
+        'h5' => ['class'],
+        'h6' => ['class'],
+        'img' => ['src', 'alt', 'class', 'width', 'height'],
+        'figure' => ['class'],
+        'figcaption' => ['class'],
+        'hr' => ['class'],
+        'span' => ['class'],
+        'div' => ['class'],
+    ];
+
+    // Allowed Quill alignment classes
     $allowedClasses = ['ql-align-left', 'ql-align-center', 'ql-align-right', 'ql-align-justify'];
 
-    // Process all elements to clean up class attributes
-    $xpath = new DOMXPath($dom);
-    $elementsWithClass = $xpath->query('//*[@class]');
-
-    if ($elementsWithClass !== false) {
-        /** @var \DOMElement $element */
-        foreach ($elementsWithClass as $element) {
-            $classes = explode(' ', $element->getAttribute('class'));
-            $safeClasses = array_filter($classes, function($cls) use ($allowedClasses) {
-                return in_array(trim($cls), $allowedClasses);
-            });
-
-            if (empty($safeClasses)) {
-                $element->removeAttribute('class');
-            } else {
-                $element->setAttribute('class', implode(' ', $safeClasses));
-            }
-        }
-    }
-
-    // Allow only safe link protocols and enforce rel for target=_blank
+    // Schemes allowed for href/src
     $allowedSchemes = ['http', 'https', 'mailto', 'tel', 'sms'];
-    foreach ($dom->getElementsByTagName('a') as $a) {
-        $href = $a->getAttribute('href');
-        $hrefTrim = trim($href);
 
-        $isRelative = (strpos($hrefTrim, '/') === 0) || (strpos($hrefTrim, '#') === 0) || ($hrefTrim === '');
-        $ok = $isRelative;
+    // Helper: Check if an attribute value is safe (no executable schemes or dangerous content)
+     $isSafeUrl = function(string $value) use ($allowedSchemes): bool {
+         // Decode entities and control characters to detect obfuscated attacks
+         $decoded = html_entity_decode($value, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+         // Remove null bytes and control characters used in obfuscation
+         $decoded = preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F]/', '', $decoded);
+         $trimmed = trim($decoded);
 
-        // If there is no scheme but it looks like a domain or email, normalize it
-        if (!$isRelative && $hrefTrim && !preg_match('/^[a-z][a-z0-9+.-]*:/i', $hrefTrim)) {
-            if (filter_var($hrefTrim, FILTER_VALIDATE_EMAIL)) {
-                $hrefTrim = 'mailto:' . $hrefTrim;
-            } elseif (preg_match('/^(www\.|[a-z0-9.-]+\.[a-z]{2,})(\/.*)?$/i', $hrefTrim)) {
-                // Looks like a bare domain, default to https
-                $hrefTrim = 'https://' . $hrefTrim;
+         if (empty($trimmed) || $trimmed[0] === '#') {
+             return true; // Fragment or empty
+         }
+
+         // Allow single root-relative /path but reject protocol-relative //host/path
+         if ($trimmed[0] === '/') {
+             // Check for protocol-relative URL (starts with //)
+             if (strlen($trimmed) > 1 && $trimmed[1] === '/') {
+                 return false; // Protocol-relative URLs not allowed
+             }
+             return true; // Single-slash root-relative paths are safe
+         }
+
+         // Check for dangerous schemes
+         if (preg_match('/^(javascript|data|vbscript|file|about):/i', $trimmed)) {
+             return false;
+         }
+
+         // Check for scheme prefix
+         if (preg_match('/^[a-z][a-z0-9+.-]*:/i', $trimmed)) {
+             $scheme = strtolower(explode(':', $trimmed)[0]);
+             return in_array($scheme, $allowedSchemes, true);
+         }
+
+         // No scheme - treat as relative/bare domain
+         return true;
+     };
+
+    // Walk all elements and enforce allowlist
+    $xpath = new DOMXPath($dom);
+    $allElements = $xpath->query('//*');
+
+    if ($allElements !== false) {
+        $elementsToRemove = [];
+
+        /** @var \DOMElement $element */
+        foreach ($allElements as $element) {
+            $tag = strtolower($element->nodeName);
+
+            // Remove unknown tags
+            if (!isset($allowedElements[$tag])) {
+                $elementsToRemove[] = $element;
+                continue;
             }
-        }
 
-        if (!$ok && $hrefTrim) {
-            $parts = parse_url($hrefTrim);
-            $scheme = isset($parts['scheme']) ? strtolower($parts['scheme']) : '';
-            if (in_array($scheme, $allowedSchemes, true)) {
-                $ok = true;
+            // Remove all attributes except safe ones for this tag
+            $safeAttrs = $allowedElements[$tag];
+            $attrsToRemove = [];
+
+            foreach ($element->attributes as $attr) {
+                $attrName = strtolower($attr->name);
+
+                // Remove any attribute with "on" prefix (event handlers)
+                if (strpos($attrName, 'on') === 0) {
+                    $attrsToRemove[] = $attr->name;
+                    continue;
+                }
+
+                // Remove dangerous attributes
+                if (in_array($attrName, ['style', 'srcdoc', 'srcset', 'xmlns', 'xlink', 'svg', 'script'], true)) {
+                    $attrsToRemove[] = $attr->name;
+                    continue;
+                }
+
+                // Keep only safe attributes
+                if (!in_array($attrName, $safeAttrs, true)) {
+                    $attrsToRemove[] = $attr->name;
+                    continue;
+                }
+
+                // Validate URL attributes
+                if (in_array($attrName, ['href', 'src'], true)) {
+                    if (!$isSafeUrl($attr->value)) {
+                        $attrsToRemove[] = $attr->name;
+                    }
+                }
+
+                // Validate classes
+                if ($attrName === 'class') {
+                    $classes = preg_split('/\s+/', $attr->value, -1, PREG_SPLIT_NO_EMPTY);
+                    $safeClasses = array_filter($classes, function($cls) use ($allowedClasses) {
+                        return in_array(trim($cls), $allowedClasses);
+                    });
+
+                    if (empty($safeClasses)) {
+                        $attrsToRemove[] = $attr->name;
+                    } else {
+                        $element->setAttribute('class', implode(' ', $safeClasses));
+                    }
+                }
             }
-        }
 
-        if ($ok) {
-            // Persist normalized href if changed
-            if ($hrefTrim !== $href) {
-                $a->setAttribute('href', $hrefTrim);
+            // Remove unsafe attributes
+            foreach ($attrsToRemove as $attrName) {
+                $element->removeAttribute($attrName);
             }
-        } else {
-            // Fallback to harmless link
-            $a->setAttribute('href', '#');
+
+             // Link-specific processing
+             if ($tag === 'a') {
+                 $href = $element->getAttribute('href');
+                 if (!$href) {
+                     $element->setAttribute('href', '#');
+                 } else {
+                     // Normalize bare domains to https
+                     $hrefTrimmed = trim($href);
+                     if ($hrefTrimmed && !preg_match('/^[a-z][a-z0-9+.-]*:/i', $hrefTrimmed) &&
+                         !preg_match('/^[#\/]/', $hrefTrimmed) && filter_var($hrefTrimmed, FILTER_VALIDATE_EMAIL)) {
+                         $element->setAttribute('href', 'mailto:' . $hrefTrimmed);
+                     } elseif ($hrefTrimmed && !preg_match('/^[a-z][a-z0-9+.-]*:/i', $hrefTrimmed) &&
+                               !preg_match('/^[#\/]/', $hrefTrimmed) && preg_match('/^(www\.|[a-z0-9.-]+\.[a-z]{2,})/i', $hrefTrimmed)) {
+                         $element->setAttribute('href', 'https://' . $hrefTrimmed);
+                     }
+                 }
+
+                 // Constrain target to allowed values
+                 $target = strtolower($element->getAttribute('target'));
+                 if ($target && $target !== '_blank' && $target !== '_self') {
+                     $element->removeAttribute('target');
+                 }
+
+                 // Normalize rel to controlled tokens only
+                 $rel = $element->getAttribute('rel');
+                 if ($rel) {
+                     $relTokens = preg_split('/\s+/', $rel, -1, PREG_SPLIT_NO_EMPTY);
+                     $allowedRelTokens = ['noopener', 'noreferrer', 'nofollow', 'external'];
+                     $safeRelTokens = array_filter($relTokens, function($token) use ($allowedRelTokens) {
+                         return in_array(strtolower($token), $allowedRelTokens, true);
+                     });
+                     if (empty($safeRelTokens)) {
+                         $element->removeAttribute('rel');
+                     } else {
+                         $element->setAttribute('rel', implode(' ', array_unique($safeRelTokens)));
+                     }
+                 }
+
+                 // If target=_blank, force noopener noreferrer
+                 if ($target === '_blank') {
+                     $rel = $element->getAttribute('rel');
+                     $rels = $rel ? preg_split('/\s+/', $rel, -1, PREG_SPLIT_NO_EMPTY) : [];
+                     $rels = array_unique(array_merge($rels, ['noopener', 'noreferrer']));
+                     $element->setAttribute('rel', implode(' ', $rels));
+                 }
+             }
         }
 
-        // If opening in a new tab, add safe rel attributes
-        if (strtolower($a->getAttribute('target')) === '_blank') {
-            $rel = strtolower($a->getAttribute('rel'));
-            $rels = array_filter(array_unique(array_merge(
-                $rel ? preg_split('/\s+/', $rel) : [],
-                ['noopener', 'noreferrer']
-            )));
-            $a->setAttribute('rel', implode(' ', $rels));
-        }
-
-        // Strip any event handler attributes that might remain
-        $attrsToRemove = [];
-        foreach ($a->attributes as $attr) {
-            if (preg_match('/^on/i', $attr->name)) {
-                $attrsToRemove[] = $attr->name;
-            }
-        }
-        foreach ($attrsToRemove as $attrName) {
-            $a->removeAttribute($attrName);
+        // Remove disallowed elements (walk backward to preserve iteration)
+        foreach (array_reverse($elementsToRemove) as $element) {
+            $element->parentNode->removeChild($element);
         }
     }
 
-    // For images: ensure no javascript: in src
-    foreach ($dom->getElementsByTagName('img') as $img) {
-        $src = $img->getAttribute('src');
-        if (preg_match('/^\s*javascript:/i', $src)) {
-            $img->setAttribute('src', '');
-        }
-        // Remove event handlers
-        $attrsToRemove = [];
-        foreach ($img->attributes as $attr) {
-            if (preg_match('/^on/i', $attr->name)) {
-                $attrsToRemove[] = $attr->name;
-            }
-        }
-        foreach ($attrsToRemove as $attrName) {
-            $img->removeAttribute($attrName);
-        }
-    }
-
-    // Extract the content from the wrapper div
+    // Extract content from wrapper div
     $body = $dom->getElementsByTagName('div')->item(0);
     $clean = '';
     if ($body) {
@@ -328,12 +504,12 @@ function sanitizeHtml(string $html): string
             $clean .= $dom->saveHTML($child);
         }
     } else {
-        // Fallback if wrapper not found
         $clean = $dom->saveHTML();
     }
 
     libxml_clear_errors();
     libxml_use_internal_errors($prevUseInternalErrors);
+
     return $clean;
 }
 
@@ -356,7 +532,7 @@ function generateExcerpt(string $html, int $maxLength = 250): string
 }
 
 /**
- * CSRF helpers
+ * CSRF and session helpers
  */
 function ensureSession(): void
 {
@@ -999,45 +1175,81 @@ function getFaviconUrls(\mysqli $db_conn, string|int|null $favicon_media_id = nu
  * @param string $password Plain text password to encrypt
  * @return string Encrypted password (base64 encoded with IV) or empty string
  */
+/**
+ * Decrypt and validate APP_ENCRYPTION_KEY from environment.
+ * Must be exactly 64 hexadecimal characters (32 bytes when decoded).
+ *
+ * @return string 32 raw bytes, or empty string if missing/invalid
+ */
+function getAppEncryptionKeyBytes(): string
+{
+    $keyHex = getenv('APP_ENCRYPTION_KEY');
+    if ($keyHex === false || $keyHex === '') {
+        return '';
+    }
+
+    // Must be exactly 64 hex characters
+    if (!ctype_xdigit($keyHex) || strlen($keyHex) !== 64) {
+        error_log('getAppEncryptionKeyBytes: APP_ENCRYPTION_KEY must be exactly 64 hexadecimal characters');
+        return '';
+    }
+
+    return hex2bin($keyHex);
+}
+
+/**
+ * Encrypt SMTP password using v2 AES-256-GCM envelope.
+ * Requires independent APP_ENCRYPTION_KEY (64 hex chars = 32 bytes).
+ * Uses random 12-byte nonce and 16-byte authentication tag.
+ *
+ * @param string $password SMTP password to encrypt
+ * @return string Base64-encoded v2 envelope or empty string on failure
+ */
 function encryptSmtpPassword(string $password): string
 {
     if ($password === '') {
         return '';
     }
 
-    // Use a key derived from the database credentials (consistent across requests)
-    $mysqlPassword = getenv('MYSQL_PASSWORD');
-    $mysqlDatabase = getenv('MYSQL_DATABASE');
-
-    if ($mysqlPassword === false || $mysqlDatabase === false) {
-        error_log('encryptSmtpPassword: Missing MYSQL_PASSWORD or MYSQL_DATABASE env vars');
+    $appKey = getAppEncryptionKeyBytes();
+    if ($appKey === '') {
+        error_log('encryptSmtpPassword: Missing or invalid APP_ENCRYPTION_KEY');
         return '';
     }
 
-    $key = hash('sha256', $mysqlPassword . $mysqlDatabase, true);
-    $ivLength = openssl_cipher_iv_length('aes-256-cbc');
-
-    if ($ivLength === false) {
-        error_log('encryptSmtpPassword: Failed to get IV length');
+    // v2 format: 1 byte version + 12 bytes nonce + ciphertext + 16 bytes auth tag
+    try {
+        $nonce = random_bytes(12);
+    } catch (Throwable $e) {
+        error_log('encryptSmtpPassword: Failed to generate nonce');
         return '';
     }
 
-    $iv = openssl_random_pseudo_bytes($ivLength);
-    $encrypted = openssl_encrypt($password, 'aes-256-cbc', $key, 0, $iv);
+    $tag = '';  // Will be filled by openssl_encrypt
+    $encrypted = openssl_encrypt(
+        $password,
+        'aes-256-gcm',
+        $appKey,
+        OPENSSL_RAW_DATA,
+        $nonce,
+        $tag
+    );
 
     if ($encrypted === false) {
         error_log('encryptSmtpPassword: Encryption failed');
         return '';
     }
 
-    // Store IV with encrypted data (base64 encoded)
-    return base64_encode($iv . $encrypted);
+    // v2 envelope: version (1) + nonce (12) + ciphertext + tag (16)
+    $envelope = chr(2) . $nonce . $encrypted . $tag;
+    return base64_encode($envelope);
 }
 
 /**
- * Decrypt SMTP password
+ * Decrypt SMTP password using v2 AES-256-GCM envelope.
+ * Rejects legacy formats and malformed envelopes.
  *
- * @param string $encryptedPassword Base64 encoded encrypted password with IV
+ * @param string $encryptedPassword Base64-encoded v2 envelope
  * @return string Decrypted password or empty string on failure
  */
 function decryptSmtpPassword(string $encryptedPassword): string
@@ -1047,49 +1259,51 @@ function decryptSmtpPassword(string $encryptedPassword): string
     }
 
     try {
-        // Use the same key as encryption
-        $mysqlPassword = getenv('MYSQL_PASSWORD');
-        $mysqlDatabase = getenv('MYSQL_DATABASE');
-
-        if ($mysqlPassword === false || $mysqlDatabase === false) {
-            error_log('decryptSmtpPassword: Missing MYSQL_PASSWORD or MYSQL_DATABASE env vars');
+        $appKey = getAppEncryptionKeyBytes();
+        if ($appKey === '') {
+            error_log('decryptSmtpPassword: Missing or invalid APP_ENCRYPTION_KEY');
             return '';
         }
 
-        $key = hash('sha256', $mysqlPassword . $mysqlDatabase, true);
-        $data = base64_decode($encryptedPassword, true);
-
-        if ($data === false) {
-            error_log("decryptSmtpPassword: Failed to base64 decode - invalid encrypted data");
+        $envelope = base64_decode($encryptedPassword, true);
+        if ($envelope === false || strlen($envelope) < 29) {  // min: 1 + 12 + 0 + 16
+            error_log('decryptSmtpPassword: Invalid envelope - too short or decode failed');
             return '';
         }
 
-        // Extract IV and encrypted data
-        $ivLength = openssl_cipher_iv_length('aes-256-cbc');
-
-        if ($ivLength === false) {
-            error_log('decryptSmtpPassword: Failed to get IV length');
+        // Parse v2 envelope: version (1) + nonce (12) + ciphertext + tag (16)
+        $version = ord($envelope[0]);
+        if ($version !== 2) {
+            error_log('decryptSmtpPassword: Invalid envelope version - only v2 accepted');
             return '';
         }
 
-        $iv = substr($data, 0, $ivLength);
-        $encrypted = substr($data, $ivLength);
+        $nonce = substr($envelope, 1, 12);
+        $tag = substr($envelope, -16);
+        $ciphertext = substr($envelope, 13, -16);
 
-        if (strlen($iv) !== $ivLength) {
-            error_log("decryptSmtpPassword: Invalid IV length - corrupted encrypted data");
+        if (strlen($nonce) !== 12 || strlen($tag) !== 16) {
+            error_log('decryptSmtpPassword: Invalid envelope structure');
             return '';
         }
 
-        $decrypted = openssl_decrypt($encrypted, 'aes-256-cbc', $key, 0, $iv);
+        $decrypted = openssl_decrypt(
+            $ciphertext,
+            'aes-256-gcm',
+            $appKey,
+            OPENSSL_RAW_DATA,
+            $nonce,
+            $tag
+        );
 
         if ($decrypted === false) {
-            error_log("decryptSmtpPassword: Decryption failed - possible key mismatch or corrupted data");
+            error_log('decryptSmtpPassword: Decryption failed - authentication failed or wrong key');
             return '';
         }
 
         return $decrypted;
     } catch (Exception $e) {
-        error_log("decryptSmtpPassword: Exception - " . $e->getMessage());
+        error_log('decryptSmtpPassword: Exception - ' . $e->getMessage());
         return '';
     }
 }
@@ -1199,24 +1413,50 @@ function getTotalSubscriberCount(\mysqli $db_conn): int
 }
 
 /**
- * Generate a secure unsubscribe token for an email address
- * Uses HMAC to prevent tampering
+ * Get UNSUBSCRIBE_SECRET from environment.
+ * Must be at least 32 bytes/characters.
  *
- * @param string $email The email address to generate a token for
- * @return string URL-safe base64 encoded token
+ * @return string The secret, or empty string if missing/too short
  */
-function generateUnsubscribeToken(string $email): string
+function getUnsubscribeSecret(): string
 {
     $secret = getenv('UNSUBSCRIBE_SECRET');
     if ($secret === false || $secret === '') {
-        $cfg = getDbConfig();
-        $secret = $cfg['password'];
+        return '';
     }
 
-    // Create payload with email (no timestamp/expiration)
-    $payload = json_encode(['email' => $email]);
+    if (strlen($secret) < 32) {
+        error_log('getUnsubscribeSecret: UNSUBSCRIBE_SECRET must be at least 32 bytes');
+        return '';
+    }
 
-    // Generate HMAC signature
+    return $secret;
+}
+
+/**
+ * Generate a v2 unsubscribe token for an email address.
+ * Requires independent UNSUBSCRIBE_SECRET (at least 32 bytes).
+ * Uses constant-time HMAC-SHA256 with purpose binding.
+ *
+ * @param string $email The email address to generate a token for
+ * @return string URL-safe base64 encoded v2 token
+ */
+function generateUnsubscribeToken(string $email): string
+{
+    $secret = getUnsubscribeSecret();
+    if ($secret === '') {
+        error_log('generateUnsubscribeToken: Missing or invalid UNSUBSCRIBE_SECRET');
+        return '';
+    }
+
+    // v2 payload: version + purpose + email (no timestamp/expiration)
+    $payload = json_encode([
+        'v' => 2,
+        'purpose' => 'unsubscribe',
+        'email' => $email
+    ]);
+
+    // Generate HMAC-SHA256 signature with constant-time comparison in validation
     $signature = hash_hmac('sha256', $payload, $secret);
 
     // Combine payload and signature
@@ -1227,7 +1467,9 @@ function generateUnsubscribeToken(string $email): string
 }
 
 /**
- * Validate and decode an unsubscribe token
+ * Validate and decode a v2 unsubscribe token.
+ * Rejects legacy formats, wrong purpose, and all tampering.
+ * Requires independent UNSUBSCRIBE_SECRET (at least 32 bytes).
  *
  * @param string $token The token to validate
  * @return string|false Email address if valid, false otherwise
@@ -1235,11 +1477,23 @@ function generateUnsubscribeToken(string $email): string
 function validateUnsubscribeToken(string $token): string|false
 {
     try {
-        // Make URL-safe base64 back to normal
-        $token = strtr($token, '-_', '+/');
+        $secret = getUnsubscribeSecret();
+        if ($secret === '') {
+            error_log('validateUnsubscribeToken: Missing or invalid UNSUBSCRIBE_SECRET');
+            return false;
+        }
+
+        // Canonicalize URL-safe base64: convert - and _ back to + and /
+        $canonical = strtr($token, '-_', '+/');
+
+        // Verify canonical form (reject non-standard encodings)
+        $reencoded = strtr(base64_encode(base64_decode($canonical, true)), '+/', '-_');
+        if ($canonical !== $reencoded) {
+            return false;
+        }
 
         // Decode
-        $decoded = base64_decode($token, true);
+        $decoded = base64_decode($canonical, true);
         if ($decoded === false) {
             return false;
         }
@@ -1252,29 +1506,159 @@ function validateUnsubscribeToken(string $token): string|false
 
         list($payload, $signature) = $parts;
 
-        // Verify signature
-        $secret = getenv('UNSUBSCRIBE_SECRET');
-        if ($secret === false || $secret === '') {
-            $cfg = getDbConfig();
-            $secret = $cfg['password'];
-        }
+        // Verify signature with constant-time comparison
         $expectedSignature = hash_hmac('sha256', $payload, $secret);
-
         if (!hash_equals($expectedSignature, $signature)) {
             return false;
         }
 
         // Decode payload
         $data = json_decode($payload, true);
-        if (!$data || !isset($data['email'])) {
+        if (!$data || !is_array($data)) {
             return false;
         }
 
-        return $data['email'];
+        // Enforce v2 version
+        if (!isset($data['v']) || $data['v'] !== 2) {
+            return false;
+        }
+
+        // Enforce unsubscribe purpose
+        if (!isset($data['purpose']) || $data['purpose'] !== 'unsubscribe') {
+            return false;
+        }
+
+        // Extract email and validate it's a string
+        if (!isset($data['email']) || !is_string($data['email'])) {
+            return false;
+        }
+
+        $email = $data['email'];
+
+        // Validate email format (must be valid)
+        if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            return false;
+        }
+
+        return $email;
 
     } catch (Exception $e) {
-        error_log('Unsubscribe token validation error: ' . $e->getMessage());
+        error_log('validateUnsubscribeToken: Exception - ' . $e->getMessage());
         return false;
+    }
+}
+
+/**
+ * SMTP configuration and log path constants
+ */
+const SMTP_LOG_PATH = '/var/log/postportal/smtp.log';
+
+/**
+ * Validate SMTP security policy: authentication requires encryption (TLS/SMTPS)
+ *
+ * @param bool $smtpAuth Whether SMTP authentication is enabled
+ * @param string $smtpSecure Encryption mode: exactly 'tls' or 'ssl' for authenticated connections
+ * @return bool True if policy is satisfied, false if authenticated plaintext is attempted
+ */
+function validateSmtpSecurityPolicy(bool $smtpAuth, string $smtpSecure): bool
+{
+    // Unauthenticated plaintext is allowed
+    if (!$smtpAuth) {
+        return true;
+    }
+
+    // Authenticated connections MUST use encrypted wire: exactly 'tls' or 'ssl'
+    return $smtpSecure === 'tls' || $smtpSecure === 'ssl';
+}
+
+/**
+ * Configure strict PHPMailer SMTP transport security and time limits.
+ *
+ * @throws \InvalidArgumentException If the timeout is not positive
+ */
+function configureSmtpTransportSecurity(\PHPMailer\PHPMailer\PHPMailer $mail, int $timeoutSeconds): void
+{
+    if ($timeoutSeconds <= 0) {
+        throw new \InvalidArgumentException('SMTP timeout must be positive');
+    }
+
+    $mail->Timeout = $timeoutSeconds;
+    $smtp = $mail->getSMTPInstance();
+    $smtp->Timeout = $timeoutSeconds;
+    $smtp->Timelimit = $timeoutSeconds;
+
+    $smtpOptions = $mail->SMTPOptions;
+    $sslOptions = $smtpOptions['ssl'] ?? [];
+    $sslOptions['verify_peer'] = true;
+    $sslOptions['verify_peer_name'] = true;
+    $sslOptions['allow_self_signed'] = false;
+    $smtpOptions['ssl'] = $sslOptions;
+    $mail->SMTPOptions = $smtpOptions;
+}
+
+/**
+ * Get SMTP log file path for owned diagnostics
+ *
+ * @return string Canonical path: /var/log/postportal/smtp.log
+ */
+function getSmtpLogPath(): string
+{
+    return SMTP_LOG_PATH;
+}
+
+/**
+ * Redact sensitive SMTP diagnostics for logging
+ *
+ * Removes: credentials (username/password), full email addresses, auth details
+ * Keeps: SMTP command structure, connection status, port/host
+ *
+ * @param string $diagnostic SMTP diagnostic string
+ * @return string Redacted string safe for logging
+ */
+function redactSmtpDiagnostics(string $diagnostic): string
+{
+    // SMTP AUTH commands and their inline payloads are always sensitive.
+    $redacted = preg_replace('/\bAUTH\s+(?:LOGIN|PLAIN|CRAM-MD5)\b[^\r\n]*/i', 'AUTH *** REDACTED ***', $diagnostic) ?? $diagnostic;
+
+    // Base64 payloads can contain SMTP credentials or encoded message data.
+    $redacted = preg_replace('/(?<![A-Za-z0-9+\/])[A-Za-z0-9+\/]{16,}={0,2}(?![A-Za-z0-9+\/])/','*** BASE64 REDACTED ***', $redacted) ?? $redacted;
+
+    // Redact email addresses (simplistic but catches most cases)
+    $redacted = preg_replace(
+        '/(?:[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/i',
+        '***@***.***',
+        $redacted
+    ) ?? $redacted;
+
+    // Redact secrets commonly surfaced in SMTP and HTTP diagnostics.
+    $redacted = preg_replace('/\b(password|passwd|pwd|activation(?:[_-]?token)?|unsubscribe(?:[_-]?token)?|token)\b\s*[:=]\s*[^\s&#,;]+/i', '$1=*** REDACTED ***', $redacted) ?? $redacted;
+    $redacted = preg_replace('/\bauthorization\s*:\s*[^\r\n]+/i', 'Authorization: *** REDACTED ***', $redacted) ?? $redacted;
+    $redacted = preg_replace('/\bbearer\s+[^\s,;]+/i', 'Bearer *** REDACTED ***', $redacted) ?? $redacted;
+
+    // Redact RCPT TO addresses if full email remains
+    $redacted = preg_replace(
+        '/(RCPT TO:<)[^>]+(>)/i',
+        '${1}***@***${2}',
+        $redacted
+    ) ?? $redacted;
+
+    return $redacted;
+}
+
+/**
+ * Build notification URL with canonical app URL
+ *
+ * @param int $postId Post ID
+ * @return string Full URL to post or null on error
+ */
+function buildNotificationPostUrl(int $postId): ?string
+{
+    try {
+        $baseUrl = getCanonicalAppUrl();
+        return "{$baseUrl}/?page=home&post_id={$postId}";
+    } catch (\RuntimeException $e) {
+        error_log('Failed to build notification URL: ' . $e->getMessage());
+        return null;
     }
 }
 
@@ -1324,61 +1708,68 @@ function checkEmailConfiguration(\mysqli $db_conn, bool $testConnection = true):
         ];
     }
 
+    // Enforce SMTP security policy: extract and validate immediately after field validation
+    $smtp_secure = $settings['smtp_secure'] ?? 'none';
+    // Convert 'none' to empty string for policy check (PHPMailer convention)
+    $smtp_secure_normalized = ($smtp_secure === 'none') ? '' : $smtp_secure;
+    $smtp_auth = isset($settings['smtp_auth']) ? (bool)$settings['smtp_auth'] : true;
+
+    // Reject authenticated plaintext connections (no encryption) - applies regardless of testConnection
+    if (!validateSmtpSecurityPolicy($smtp_auth, $smtp_secure_normalized)) {
+        error_log('SMTP security policy violation: authentication attempted without TLS/SMTPS encryption');
+        return [
+            'canSend' => false,
+            'error' => 'SMTP configuration error. Please verify your email settings.',
+            'actionRequired' => 'configure_smtp',
+            'actionLabel' => 'Configure Email Settings',
+            'subscriberCount' => $subscriberCount
+        ];
+    }
+
     // Test actual SMTP connection if requested
     if ($testConnection) {
         try {
             require_once(__DIR__ . '/vendor/autoload.php');
 
-            $mail = new PHPMailer\PHPMailer\PHPMailer(true);
-            $mail->isSMTP();
-            $mail->Host = $smtp_host;
-            $mail->Port = isset($settings['smtp_port']) ? (int)$settings['smtp_port'] : 587;
-            $mail->Timeout = 5;
-            $smtp = $mail->getSMTPInstance();
-            $smtp->Timeout = 5;
-            $smtp->Timelimit = 5;
+              $mail = new PHPMailer\PHPMailer\PHPMailer(true);
+              $mail->isSMTP();
+              $mail->Host = $smtp_host;
+              $mail->Port = isset($settings['smtp_port']) ? (int)$settings['smtp_port'] : 587;
+              configureSmtpTransportSecurity($mail, 5);
 
-            $smtp_secure = $settings['smtp_secure'] ?? 'none';
-            if ($smtp_secure !== 'none' && $smtp_secure !== '') {
-                $mail->SMTPSecure = $smtp_secure;
-            }
+             if ($smtp_secure !== 'none' && $smtp_secure !== '') {
+                 $mail->SMTPSecure = $smtp_secure;
+             }
 
-            $smtp_auth = isset($settings['smtp_auth']) ? (bool)$settings['smtp_auth'] : true;
-            if ($smtp_auth) {
-                $mail->SMTPAuth = true;
-                $mail->Username = $settings['smtp_username'] ?? '';
-                $mail->Password = $settings['smtp_password'] ?? '';
-            }
+             if ($smtp_auth) {
+                 $mail->SMTPAuth = true;
+                 $mail->Username = $settings['smtp_username'] ?? '';
+                 $mail->Password = $settings['smtp_password'] ?? '';
+             }
 
-            $mail->SMTPOptions = [
-                'ssl' => [
-                    'verify_peer' => false,
-                    'verify_peer_name' => false,
-                    'allow_self_signed' => true
-                ]
-            ];
+              if (!$mail->smtpConnect()) {
+                 error_log('SMTP connection test failed');
+                 return [
+                     'canSend' => false,
+                     'error' => 'Cannot connect to SMTP server. Please verify your email settings.',
+                     'actionRequired' => 'configure_smtp',
+                     'actionLabel' => 'Configure Email Settings',
+                     'subscriberCount' => $subscriberCount
+                 ];
+             }
 
-            if (!$mail->smtpConnect()) {
-                return [
-                    'canSend' => false,
-                    'error' => 'Cannot connect to SMTP server. Please verify your email settings.',
-                    'actionRequired' => 'configure_smtp',
-                    'actionLabel' => 'Configure Email Settings',
-                    'subscriberCount' => $subscriberCount
-                ];
-            }
-
-            $mail->smtpClose();
-        } catch (\Exception $e) {
-            return [
-                'canSend' => false,
-                'error' => 'SMTP connection failed: ' . $e->getMessage(),
-                'actionRequired' => 'configure_smtp',
-                'actionLabel' => 'Configure Email Settings',
-                'subscriberCount' => $subscriberCount
-            ];
-        }
-    }
+             $mail->smtpClose();
+          } catch (\Exception $e) {
+              error_log('SMTP connection test error: ' . redactSmtpDiagnostics($e->getMessage()));
+             return [
+                 'canSend' => false,
+                 'error' => 'Cannot connect to SMTP server. Please verify your email settings.',
+                 'actionRequired' => 'configure_smtp',
+                 'actionLabel' => 'Configure Email Settings',
+                 'subscriberCount' => $subscriberCount
+             ];
+         }
+     }
 
     return [
         'canSend' => true,
@@ -1420,8 +1811,8 @@ function sendNewPostNotification(\mysqli $db_conn, int $postId): array
     $smtp_from_email = $settings['smtp_from_email'] ?? null;
     $smtp_from_name = $settings['smtp_from_name'] ?? 'Post Portal';
 
-    // Debug: Log SMTP configuration (without exposing password)
-    error_log("SMTP Config - Host: {$smtp_host}, Port: {$smtp_port}, Secure: {$smtp_secure}, Auth: " . ($smtp_auth ? 'true' : 'false') . ", Username: {$smtp_username}, Password Length: " . strlen($smtp_password) . ", From Email: {$smtp_from_email}, From Name: {$smtp_from_name}");
+     // Log SMTP configuration (redacted for security)
+     error_log("SMTP Config - Port: {$smtp_port}, Secure: {$smtp_secure}, Auth: " . ($smtp_auth ? 'true' : 'false'));
 
     // Validate required SMTP settings
     $missingFields = [];
@@ -1435,6 +1826,17 @@ function sendNewPostNotification(\mysqli $db_conn, int $postId): array
         return [
             'success' => false,
             'error' => 'SMTP configuration incomplete. Missing: ' . implode(', ', $missingFields),
+            'actionRequired' => 'configure_smtp',
+            'actionLabel' => 'Configure Email Settings'
+        ];
+    }
+
+    // Enforce SMTP security policy before any other work
+    if (!validateSmtpSecurityPolicy($smtp_auth, $smtp_secure)) {
+        error_log('SMTP security policy violation: authentication attempted without encrypted transport');
+        return [
+            'success' => false,
+            'error' => 'SMTP configuration error. Please verify your email settings.',
             'actionRequired' => 'configure_smtp',
             'actionLabel' => 'Configure Email Settings'
         ];
@@ -1488,17 +1890,23 @@ function sendNewPostNotification(\mysqli $db_conn, int $postId): array
     if (!empty($post['author_first']) || !empty($post['author_last'])) {
         $authorName = trim(($post['author_first'] ?? '') . ' ' . ($post['author_last'] ?? ''));
     }
-    if (empty($authorName)) {
-        $authorName = 'Someone';
-    }
+     if (empty($authorName)) {
+         $authorName = 'Someone';
+     }
 
-    // Get the base URL for the site (for linking to post)
-    $protocol = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
-    $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
-    $baseUrl = "{$protocol}://{$host}";
+     // Build notification URL using canonical app URL
+     $postUrl = buildNotificationPostUrl($postId);
+     if ($postUrl === null) {
+         return [
+             'success' => false,
+             'error' => 'Configuration error. Please verify your email settings.',
+             'actionRequired' => 'configure_smtp',
+             'actionLabel' => 'Configure Email Settings'
+         ];
+     }
 
-    // Link directly to post detail overlay: /?page=home&post_id=X
-    $postUrl = "{$baseUrl}/?page=home&post_id={$postId}";
+     // Get canonical base URL for relative URL conversion in email body
+     $baseUrl = getCanonicalAppUrl();
 
     // Build HTML email body using ViewRenderer for consistent Smarty configuration
     $emailView = ViewRenderer::fromSmarty(null, false)->getSmarty();
@@ -1560,65 +1968,50 @@ function sendNewPostNotification(\mysqli $db_conn, int $postId): array
     try {
         require_once(__DIR__ . '/vendor/autoload.php');
 
-        // Create PHPMailer instance once and reuse
-        $mail = new PHPMailer\PHPMailer\PHPMailer(true);
+         // Create PHPMailer instance once and reuse
+         $mail = new PHPMailer\PHPMailer\PHPMailer(true);
 
-        // Enable debug output for error logging (in production, errors are logged not displayed)
-        $debugMode = getenv('DEBUG') === 'true' || getenv('DEBUG') === '1';
-        $mail->SMTPDebug = $debugMode ? 3 : 0; // Verbose debugging in dev mode only
-        $mail->Debugoutput = function($str, $level) use ($debugMode) {
-            if ($debugMode) {
-                // Only write to app log file (not error_log to avoid duplication)
-                $logFile = '/var/www/html/logs/smtp.log';
-                @file_put_contents($logFile, date('Y-m-d H:i:s') . " - " . trim($str) . "\n", FILE_APPEND);
-            }
-        };
+         // Enable debug output for error logging (in production, errors are logged not displayed)
+         $debugMode = getenv('DEBUG') === 'true' || getenv('DEBUG') === '1';
+         $mail->SMTPDebug = $debugMode ? 3 : 0; // Verbose debugging in dev mode only
+          $mail->Debugoutput = function (string $str, int $level) use ($debugMode): void {
+              if ($debugMode) {
+                  // Write SMTP diagnostics to owned log file
+                  $logFile = getSmtpLogPath();
+                  @file_put_contents($logFile, date('Y-m-d H:i:s') . " - " . trim(redactSmtpDiagnostics($str)) . "\n", FILE_APPEND);
+              }
+          };
 
-        // Server settings
-        $mail->isSMTP();
-        $mail->Host = $smtp_host;
-        $mail->Port = $smtp_port;
+         // Server settings
+         $mail->isSMTP();
+         $mail->Host = $smtp_host;
+         $mail->Port = $smtp_port;
+         configureSmtpTransportSecurity($mail, 5);
+         $mail->SMTPKeepAlive = true; // Keep connection alive for multiple sends
 
-        // Set connection timeout to prevent gateway timeouts on unreachable servers
-        // Must set timeout on both PHPMailer and the underlying SMTP instance
-        $mail->Timeout = 5; // Connection timeout in seconds
-        $smtp = $mail->getSMTPInstance();
-        $smtp->Timeout = 5; // SMTP class connection timeout
-        $smtp->Timelimit = 5; // Per-command timeout
-        $mail->SMTPKeepAlive = true; // Keep connection alive for multiple sends
+         if ($smtp_auth) {
+             $mail->SMTPAuth = true;
+             $mail->Username = $smtp_username;
+             $mail->Password = $smtp_password;
+         } else {
+             $mail->SMTPAuth = false;
+         }
 
-        if ($smtp_auth) {
-            $mail->SMTPAuth = true;
-            $mail->Username = $smtp_username;
-            $mail->Password = $smtp_password;
-        } else {
-            $mail->SMTPAuth = false;
-        }
+         if ($smtp_secure) {
+             $mail->SMTPSecure = $smtp_secure;
+         }
 
-        if ($smtp_secure) {
-            $mail->SMTPSecure = $smtp_secure;
-        }
+         // Note: Connection test is done in checkEmailConfiguration() before publishing
+         // No need to test again here - if we get this far, SMTP was already verified
 
-        // Additional SMTP options for better compatibility
-        $mail->SMTPOptions = [
-            'ssl' => [
-                'verify_peer' => false,
-                'verify_peer_name' => false,
-                'allow_self_signed' => true
-            ]
-        ];
+         // Sender - use configured from name and email
+         $mail->setFrom($smtp_from_email, $smtp_from_name);
 
-        // Note: Connection test is done in checkEmailConfiguration() before publishing
-        // No need to test again here - if we get this far, SMTP was already verified
-
-        // Sender - use configured from name and email
-        $mail->setFrom($smtp_from_email, $smtp_from_name);
-
-        // Content settings
-        $mail->isHTML(true);
-        $mail->CharSet = 'UTF-8';
-        $mail->Encoding = 'base64';
-        $mail->Subject = $subject;
+         // Content settings
+         $mail->isHTML(true);
+         $mail->CharSet = 'UTF-8';
+         $mail->Encoding = 'base64';
+         $mail->Subject = $subject;
 
         // Rate limiting variables - use database settings if available, otherwise config defaults
         $smtp_rate_limit = isset($settings['smtp_rate_limit']) ? (int)$settings['smtp_rate_limit'] : (isset($smtp_rate_limit) ? $smtp_rate_limit : 20);
@@ -1682,10 +2075,10 @@ function sendNewPostNotification(\mysqli $db_conn, int $postId): array
                     usleep((int)($batchDelay * 1000000)); // Convert to microseconds
                 }
 
-            } catch (Exception $e) {
-                error_log("Failed to send notification to {$email}: " . $e->getMessage());
-                $errors[] = $email;
-            }
+             } catch (Exception $e) {
+                 error_log("Failed to send notification to recipient " . (count($errors) + 1) . ": " . redactSmtpDiagnostics($e->getMessage()));
+                 $errors[] = $email;
+             }
         }
 
         if ($sentCount > 0) {
@@ -1705,15 +2098,15 @@ function sendNewPostNotification(\mysqli $db_conn, int $postId): array
             ];
         }
 
-    } catch (Exception $e) {
-        error_log('Failed to send post notification: ' . $e->getMessage());
-        return [
-            'success' => false,
-            'error' => 'Failed to send email: ' . $e->getMessage(),
-            'actionRequired' => 'configure_smtp',
-            'actionLabel' => 'Configure Email Settings'
-        ];
-    }
+     } catch (Exception $e) {
+         error_log('Failed to send post notification: ' . redactSmtpDiagnostics($e->getMessage()));
+         return [
+             'success' => false,
+             'error' => 'Failed to send email. Please verify your SMTP settings.',
+             'actionRequired' => 'configure_smtp',
+             'actionLabel' => 'Configure Email Settings'
+         ];
+     }
 }
 
 ?>

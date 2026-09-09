@@ -39,7 +39,7 @@ ApiHandler::handle(function (): void {
             'host' => $payload['smtp_host'],
             'port' => isset($payload['smtp_port']) ? (int) $payload['smtp_port'] : 587,
             'secure' => $payload['smtp_secure'] ?? 'none',
-            'auth' => isset($payload['smtp_auth']) ? (bool) $payload['smtp_auth'] : true,
+            'auth' => isset($payload['smtp_auth']) ? filter_var($payload['smtp_auth'], FILTER_VALIDATE_BOOLEAN) : true,
             'username' => $payload['smtp_username'] ?? '',
             'password' => !empty($payload['smtp_password']) ? (string) $payload['smtp_password'] : ($settings['smtp_password'] ?? ''),
             'from_email' => $payload['smtp_from_email'] ?? '',
@@ -70,6 +70,11 @@ ApiHandler::handle(function (): void {
         ErrorResponse::badRequest('From email is required');
     }
 
+    // SEC-08: Validate SMTP security policy before credential transmission
+    if (!validateSmtpSecurityPolicy($smtpConfig['auth'], $smtpConfig['secure'])) {
+        ErrorResponse::badRequest('SMTP authentication requires encryption (TLS or SSL). Plaintext authentication is not allowed.');
+    }
+
     $testEmail = $payload['test_email'] ?? '';
     if ($action === 'test') {
         if (empty($testEmail)) {
@@ -80,28 +85,25 @@ ApiHandler::handle(function (): void {
         }
     }
 
+    $debugMode = getenv('DEBUG') === 'true' || getenv('DEBUG') === '1';
+
     try {
         require_once __DIR__ . '/../../vendor/autoload.php';
 
         $mail = new PHPMailer\PHPMailer\PHPMailer(true);
-        $debugLog = [];
-        $debugMode = getenv('DEBUG') === 'true' || getenv('DEBUG') === '1';
         $timeoutSeconds = 10; // Shorten SMTP connect/send timeout so failures return quickly
         @set_time_limit($timeoutSeconds + 5);
         $mail->SMTPDebug = $debugMode ? 3 : 0;
-        $mail->Debugoutput = function ($str, $level) use (&$debugLog, $debugMode): void {
-            $debugLog[] = trim($str);
+        $mail->Debugoutput = function ($str, $level) use ($debugMode): void {
             if ($debugMode) {
-                $logFile = '/var/www/html/logs/smtp.log';
-                @file_put_contents($logFile, date('Y-m-d H:i:s') . ' - ' . trim($str) . "\n", FILE_APPEND);
+                $logFile = getSmtpLogPath();
+                $redacted = redactSmtpDiagnostics($str);
+                @file_put_contents($logFile, date('Y-m-d H:i:s') . ' - ' . $redacted . "\n", FILE_APPEND);
             }
         };
 
         $mail->isSMTP();
-        $mail->Timeout = $timeoutSeconds;
-        $smtp = $mail->getSMTPInstance();
-        $smtp->Timeout = $timeoutSeconds;
-        $smtp->Timelimit = $timeoutSeconds;
+        configureSmtpTransportSecurity($mail, $timeoutSeconds);
         $mail->SMTPKeepAlive = false;
         $mail->Host = $smtpConfig['host'];
         $mail->Port = $smtpConfig['port'];
@@ -117,14 +119,6 @@ ApiHandler::handle(function (): void {
         if ($smtpConfig['secure']) {
             $mail->SMTPSecure = $smtpConfig['secure'];
         }
-
-        $mail->SMTPOptions = [
-            'ssl' => [
-                'verify_peer' => false,
-                'verify_peer_name' => false,
-                'allow_self_signed' => true,
-            ],
-        ];
 
         $mail->setFrom($smtpConfig['from_email'], $smtpConfig['from_name']);
 
@@ -177,14 +171,7 @@ ApiHandler::handle(function (): void {
             $mail->send();
 
             ErrorResponse::success([
-                'message' => 'Test email sent successfully to ' . $testEmail,
-                'config' => [
-                    'host' => $smtpConfig['host'],
-                    'port' => $smtpConfig['port'],
-                    'secure' => $smtpConfig['secure'],
-                    'auth' => $smtpConfig['auth'],
-                    'from_email' => $smtpConfig['from_email'],
-                ],
+                'message' => 'Test email sent successfully',
             ]);
         }
 
@@ -197,33 +184,16 @@ ApiHandler::handle(function (): void {
 
         ErrorResponse::success([
             'message' => 'SMTP connection successful',
-            'config' => [
-                'host' => $smtpConfig['host'],
-                'port' => $smtpConfig['port'],
-                'secure' => $smtpConfig['secure'],
-                'auth' => $smtpConfig['auth'],
-            ],
-            'debug' => $debugLog,
         ]);
-    } catch (Exception $e) {
-        error_log('SMTP test failed: ' . $e->getMessage());
-
-        $errorMsg = $e->getMessage();
-        $helpfulMsg = $errorMsg;
-
-        if (strpos($errorMsg, 'Could not authenticate') !== false) {
-            $helpfulMsg = 'Authentication failed. Please check your username and password.';
-        } elseif (strpos($errorMsg, 'Could not connect to SMTP host') !== false) {
-            $helpfulMsg = 'Could not connect to SMTP server. Please check the host and port settings.';
-        } elseif (strpos($errorMsg, 'SMTP Error: Could not connect') !== false) {
-            $helpfulMsg = 'Connection failed. The server may be blocking connections or the host/port may be incorrect.';
-        } elseif (strpos($errorMsg, 'stream_socket_enable_crypto') !== false || strpos($errorMsg, 'SSL') !== false || strpos($errorMsg, 'TLS') !== false) {
-            $helpfulMsg = 'TLS/SSL encryption error. Try using a different encryption method (TLS, SSL, or none). If using port 587, try "tls". If using port 465, try "ssl".';
+    } catch (Throwable $e) {
+        if ($debugMode) {
+            @file_put_contents(
+                getSmtpLogPath(),
+                date('Y-m-d H:i:s') . ' - SMTP test failed: ' . redactSmtpDiagnostics($e->getMessage()) . "\n",
+                FILE_APPEND
+            );
         }
 
-        ErrorResponse::json(500, $helpfulMsg, [
-            'detailed_error' => $errorMsg,
-            'debug' => $debugLog,
-        ]);
+        ErrorResponse::json(500, 'SMTP connection or configuration failed. Please verify your settings and try again.');
     }
 });

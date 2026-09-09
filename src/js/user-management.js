@@ -518,17 +518,14 @@
 
   // Create new user and send email with credentials
   async function createUserAndEmail() {
-    // Validate form
-    if (!createUserForm.checkValidity()) {
-      createUserForm.classList.add('was-validated');
-      return;
-    }
-
-    // Validate password strength before proceeding
+    // The direct-create password is intentionally not part of the activation flow.
     const passwordInput = document.getElementById('newPassword');
-    if (!validatePasswordStrength(passwordInput)) {
-      passwordInput.classList.add('is-invalid');
-      showNotification('Password must be 8+ characters with uppercase, lowercase, and number', 'warning');
+    const passwordWasDisabled = passwordInput.disabled;
+    passwordInput.disabled = true;
+    const isFormValid = createUserForm.checkValidity();
+    passwordInput.disabled = passwordWasDisabled;
+    if (!isFormValid) {
+      createUserForm.classList.add('was-validated');
       return;
     }
 
@@ -548,10 +545,8 @@
     }
 
     const formData = new FormData(createUserForm);
-    const password = formData.get('password'); // Store password before sending (won't be returned from server)
     const userData = {
       username: formData.get('username'),
-      password: password,
       first: formData.get('first') || '',
       last: formData.get('last') || '',
       email: email,

@@ -1,7 +1,7 @@
 <div class="container py-4">
   {if $settings.show_hero && ($settings.hero_media_id || $settings.hero_html)}
   <div class="hero position-relative mb-4" style="max-height: 100vh; overflow: hidden;">
-      {if $is_authenticated|default:false}
+      {if $is_admin|default:false}
         <button class="btn btn-sm btn-light btn-edit-section position-absolute top-0 end-0 m-2" style="z-index: 10;" data-bs-toggle="modal" data-bs-target="#editHeroModal" title="Edit Hero Banner">
           <i class="bi bi-pencil"></i> Edit
         </button>
@@ -38,7 +38,7 @@
       {/if}
       <div class="d-flex justify-content-between align-items-center mb-3">
         <h2 class="mb-0">Updates</h2>
-        {if $is_authenticated|default:false}
+        {if $is_admin|default:false}
           <button class="btn btn-primary" id="btnCreatePost">
             <i class="bi bi-plus-circle me-1"></i>Create Post
           </button>
@@ -65,7 +65,7 @@
       <div class="sticky-top" style="top: 30px;">
         {if $settings.show_about}
           <div class="card mb-4 position-relative">
-            {if $is_authenticated|default:false}
+            {if $is_admin|default:false}
               <button class="btn btn-sm btn-light btn-edit-section position-absolute top-0 end-0 m-2" style="z-index: 10;" data-bs-toggle="modal" data-bs-target="#editAboutModal" title="Edit About Section">
                 <i class="bi bi-pencil"></i> Edit
               </button>
@@ -84,7 +84,7 @@
         {/if}
         {if $settings.show_donation}
           <div class="position-relative">
-            {if $is_authenticated|default:false}
+            {if $is_admin|default:false}
               <button class="btn btn-sm btn-light btn-edit-section position-absolute top-0 end-0 m-2" style="z-index: 10;" data-bs-toggle="modal" data-bs-target="#editDonationModal" title="Edit Donation Section">
                 <i class="bi bi-pencil"></i> Edit
               </button>
@@ -104,13 +104,13 @@
   {* Donation Modal - shown to all users when donate button is clicked *}
   {include file='templates/modals/donation_modal.tpl'}
 
-  {* Create Post Modal - only shown when authenticated *}
-  {if $is_authenticated|default:false}
+  {* Create Post Modal - only shown to administrators *}
+  {if $is_admin|default:false}
     {include file='templates/modals/create_post.tpl'}
   {/if}
 
-  {* Post Editor Modal - only shown when authenticated *}
-  {if $is_authenticated|default:false}
+  {* Editing controls - only shown to administrators *}
+  {if $is_admin|default:false}
   <div class="modal fade" id="postEditorModal" tabindex="-1" aria-labelledby="postEditorModalLabel" aria-hidden="true" data-bs-focus="false">
       <div class="modal-dialog modal-xl">
         <div class="modal-content">

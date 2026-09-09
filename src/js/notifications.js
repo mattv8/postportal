@@ -13,10 +13,12 @@
    */
   function showNotification(message, type = 'info', action = null) {
     // Create toast container if it doesn't exist
-    let toastContainer = document.querySelector('.toast-container');
+    let toastContainer = document.querySelector('[data-notification-toast-container]');
     if (!toastContainer) {
       toastContainer = document.createElement('div');
       toastContainer.className = 'toast-container position-fixed top-0 end-0 p-3';
+      toastContainer.id = 'notification-toast-container';
+      toastContainer.setAttribute('data-notification-toast-container', '');
       toastContainer.style.zIndex = '9999';
       document.body.appendChild(toastContainer);
     }
@@ -32,32 +34,55 @@
     const bgClass = 'bg-' + (typeMap[type] || 'info');
     const textClass = (type === 'warning') ? 'text-dark' : 'text-white';
 
-    // Build action button HTML if provided (stacked below message)
-    const actionBtnHtml = action && action.label ? `
-      <div class="mt-2 pt-2 border-top border-light border-opacity-25">
-        <button type="button" class="btn btn-sm btn-light toast-action-btn w-100">${action.label}</button>
-      </div>
-    ` : '';
-
     // Create toast element
     const toastId = 'toast-' + Date.now();
-    const toastHtml = `
-      <div id="${toastId}" class="toast ${bgClass} ${textClass}" role="alert" aria-live="assertive" aria-atomic="true">
-        <div class="toast-header ${bgClass} ${textClass}">
-          <strong class="me-auto">${type === 'success' ? 'Success' : type === 'warning' ? 'Warning' : type === 'error' || type === 'danger' ? 'Error' : 'Info'}</strong>
-          <button type="button" class="btn-close btn-close-white" data-bs-dismiss="toast" aria-label="Close"></button>
-        </div>
-        <div class="toast-body">
-          <div>${message.replace(/\n/g, '<br>')}</div>
-          ${actionBtnHtml}
-        </div>
-      </div>
-    `;
+    const toastElement = document.createElement('div');
+    toastElement.id = toastId;
+    toastElement.className = `toast ${bgClass} ${textClass}`;
+    toastElement.setAttribute('data-toast-boundary', '');
+    toastElement.setAttribute('role', 'alert');
+    toastElement.setAttribute('aria-live', 'assertive');
+    toastElement.setAttribute('aria-atomic', 'true');
 
-    toastContainer.insertAdjacentHTML('beforeend', toastHtml);
+    const toastHeader = document.createElement('div');
+    toastHeader.className = `toast-header ${bgClass} ${textClass}`;
+    const title = document.createElement('strong');
+    title.className = 'me-auto';
+    title.textContent = type === 'success' ? 'Success' : type === 'warning' ? 'Warning' : type === 'error' || type === 'danger' ? 'Error' : 'Info';
+    const closeButton = document.createElement('button');
+    closeButton.type = 'button';
+    closeButton.className = 'btn-close btn-close-white';
+    closeButton.setAttribute('data-bs-dismiss', 'toast');
+    closeButton.setAttribute('aria-label', 'Close');
+    toastHeader.appendChild(title);
+    toastHeader.appendChild(closeButton);
+
+    const toastBody = document.createElement('div');
+    toastBody.className = 'toast-body';
+    const messageElement = document.createElement('div');
+    messageElement.setAttribute('data-toast-message', '');
+    messageElement.style.whiteSpace = 'pre-line';
+    messageElement.textContent = String(message);
+    toastBody.appendChild(messageElement);
+
+    if (action && action.label) {
+      const actionContainer = document.createElement('div');
+      actionContainer.className = 'mt-2 pt-2 border-top border-light border-opacity-25';
+      actionContainer.setAttribute('data-toast-action-container', '');
+      const actionButton = document.createElement('button');
+      actionButton.type = 'button';
+      actionButton.className = 'btn btn-sm btn-light toast-action-btn w-100';
+      actionButton.setAttribute('data-toast-action', '');
+      actionButton.textContent = String(action.label);
+      actionContainer.appendChild(actionButton);
+      toastBody.appendChild(actionContainer);
+    }
+
+    toastElement.appendChild(toastHeader);
+    toastElement.appendChild(toastBody);
+    toastContainer.appendChild(toastElement);
 
     // Initialize and show the toast
-    const toastElement = document.getElementById(toastId);
     const toast = new bootstrap.Toast(toastElement, {
       autohide: type === 'success', // Auto-hide success messages
       delay: 5000
@@ -70,7 +95,11 @@
       if (actionBtn) {
         actionBtn.addEventListener('click', () => {
           actionBtn.disabled = true;
-          actionBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+          const spinner = document.createElement('span');
+          spinner.className = 'spinner-border spinner-border-sm';
+          spinner.setAttribute('aria-hidden', 'true');
+          actionBtn.textContent = '';
+          actionBtn.appendChild(spinner);
           action.callback(toast, toastElement);
         });
       }

@@ -64,6 +64,6 @@ ApiHandler::handle(function (): void {
         ErrorResponse::success(['title' => $generatedTitle]);
     } catch (\Exception $e) {
         error_log('OpenAI API Error: ' . $e->getMessage());
-        ErrorResponse::internalError('Failed to generate title: ' . $e->getMessage());
+        ErrorResponse::internalError('Failed to generate title');
     }
 });

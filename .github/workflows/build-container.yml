@@ -14,12 +14,14 @@ jobs:
   phpstan:
     name: Static Analysis
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@d632683dd7b4114ad314bca15554477dd762a938 # v4.2.0
 
       - name: Setup PHP
-        uses: shivammathur/setup-php@v2
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
         with:
           php-version: '8.1'
           extensions: mbstring, xml, gd, mysqli
@@ -30,6 +32,21 @@ jobs:
 
       - name: Run PHPStan
         run: ./vendor/bin/phpstan analyse --error-format=github
+
+  composer-audit:
+    name: Validate Dependencies
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@d632683dd7b4114ad314bca15554477dd762a938 # v4.2.0
+
+      - name: Validate composer.json and composer.lock
+        run: docker run --rm --volume "$PWD:/app:ro" --workdir /app composer:2 validate --strict
+
+      - name: Audit dependencies for security advisories
+        run: docker run --rm --volume "$PWD:/app:ro" --workdir /app composer:2 audit --locked --no-interaction
 
   build-and-push:
     name: Build and Push Container Image
@@ -45,10 +62,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@d632683dd7b4114ad314bca15554477dd762a938 # v4.2.0
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@d70bba72b1f3fd22344832f00baa16ece964efeb # v3.3.0
 
       - name: Extract branch name
         id: extract_branch
@@ -77,7 +94,7 @@ jobs:
           echo "Tags to be pushed: ${TAGS}"
 
       - name: Log in to Harbor Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@0d4c9c5ea7693da7b068278f7b52bda2a190a446 # v3.2.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ secrets.HARBOR_USERNAME }}
@@ -85,7 +102,7 @@ jobs:
 
       - name: Build and push Docker image
         id: build-and-push
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5.4.0
         with:
           context: .
           file: ./docker/Dockerfile
@@ -114,12 +131,12 @@ jobs:
 
     steps:
       - name: Install Cosign
-        uses: sigstore/cosign-installer@v3
+        uses: sigstore/cosign-installer@59acb6260d9c0ba8f4a2f9d9b48431a222b68e20 # v3.5.0
         with:
           cosign-release: 'v2.4.1'  # Use newer version that supports SIGSTORE PRIVATE KEY format
 
       - name: Log in to Harbor Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@0d4c9c5ea7693da7b068278f7b52bda2a190a446 # v3.2.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ secrets.HARBOR_USERNAME }}
@@ -147,21 +164,21 @@ jobs:
 
     steps:
       - name: Log in to Harbor Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@0d4c9c5ea7693da7b068278f7b52bda2a190a446 # v3.2.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ secrets.HARBOR_USERNAME }}
           password: ${{ secrets.HARBOR_PASSWORD }}
 
       - name: Generate SBOM
-        uses: anchore/sbom-action@v0
+        uses: anchore/sbom-action@7ccf588e3cf3cc2611714c2eeae48550fbc17552 # v0.15.11
         with:
-          image: ${{ needs.build-and-push.outputs.image-name }}
+          image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-and-push.outputs.digest }}
           format: spdx-json
           output-file: sbom.spdx.json
 
       - name: Upload SBOM
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808 # v4.3.3
         with:
           name: sbom-${{ needs.build-and-push.outputs.branch }}
           path: sbom.spdx.json
@@ -176,7 +193,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@d632683dd7b4114ad314bca15554477dd762a938 # v4.2.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -206,7 +223,7 @@ jobs:
   summary:
     name: Build Summary
     runs-on: self-hosted
-    needs: [build-and-push, sign, sbom, phpstan]
+    needs: [build-and-push, sign, sbom, sync-readme, phpstan, composer-audit]
     if: always()
     permissions:
       contents: read
@@ -218,7 +235,9 @@ jobs:
           BUILD_PUSH_STATUS="${{ needs.build-and-push.result }}"
           SIGN_STATUS="${{ needs.sign.result }}"
           SBOM_STATUS="${{ needs.sbom.result }}"
+          SYNC_STATUS="${{ needs.sync-readme.result }}"
           PHPSTAN_STATUS="${{ needs.phpstan.result }}"
+          AUDIT_STATUS="${{ needs.composer-audit.result }}"
 
           echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -242,8 +261,20 @@ jobs:
             echo "**Signed:** ❌ Failed" >> $GITHUB_STEP_SUMMARY
           fi
           echo "" >> $GITHUB_STEP_SUMMARY
+          if [ "$SYNC_STATUS" = "success" ]; then
+            echo "**README Sync:** ✅ Passed" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "**README Sync:** ⏭️ Skipped (no changes)" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
           if [ "$PHPSTAN_STATUS" = "success" ]; then
             echo "**Static Analysis:** ✅ Passed" >> $GITHUB_STEP_SUMMARY
           else
             echo "**Static Analysis:** ❌ Failed" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ "$AUDIT_STATUS" = "success" ]; then
+            echo "**Dependency Audit:** ✅ Passed" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "**Dependency Audit:** ❌ Failed" >> $GITHUB_STEP_SUMMARY
           fi

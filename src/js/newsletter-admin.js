@@ -349,57 +349,94 @@
     }
   }
 
-  // Render subscribers table
+  // Render subscribers table using DOM APIs
+  // SEC-01: Build rows safely with textContent, no inline handlers
   function renderSubscribers() {
     const tbody = document.getElementById('subscribersList');
-    const tableWrapper = tbody.closest('.table-responsive');
-
     if (!tbody) return;
 
     if (subscribers.length === 0) {
-      tbody.innerHTML = `
-        <tr>
-          <td colspan="4" class="text-center text-muted py-4">
-            <i class="bi bi-info-circle me-2"></i>
-            No subscribers yet. Users can sign up via the mailing list section on the home page.
-          </td>
-        </tr>
-      `;
+      tbody.innerHTML = '';
+      const emptyRow = document.createElement('tr');
+      const emptyCell = document.createElement('td');
+      emptyCell.colSpan = 4;
+      emptyCell.className = 'text-center text-muted py-4';
+      const emptyContent = document.createElement('div');
+      const emptyIcon = document.createElement('i');
+      emptyIcon.className = 'bi bi-info-circle me-2';
+      emptyContent.appendChild(emptyIcon);
+      emptyContent.appendChild(document.createTextNode('No subscribers yet. Users can sign up via the mailing list section on the home page.'));
+      emptyCell.appendChild(emptyContent);
+      emptyRow.appendChild(emptyCell);
+      tbody.appendChild(emptyRow);
       return;
     }
 
-    tbody.innerHTML = subscribers.map(sub => {
-      const isActive = sub.is_active == 1;
-      const statusBadge = isActive
-        ? '<span class="badge bg-success">Active</span>'
-        : '<span class="badge bg-secondary">Archived</span>';
+    tbody.innerHTML = '';
 
-      return `
-        <tr ${!isActive ? 'class="table-secondary"' : ''}>
-          <td>${sub.email}</td>
-          <td>${formatDate(sub.subscribed_at)}</td>
-          <td>${statusBadge}</td>
-          <td>
-            ${isActive ? `
-              <button class="btn btn-sm btn-outline-danger" onclick="window.newsletterAdmin.deleteSubscriber(${sub.id}, '${sub.email}')">
-                <i class="bi bi-trash"></i> Archive
-              </button>
-            ` : `
-              <button class="btn btn-sm btn-outline-success" onclick="window.newsletterAdmin.reactivateSubscriber(${sub.id}, '${sub.email}')">
-                <i class="bi bi-arrow-clockwise"></i> Reactivate
-              </button>
-            `}
-          </td>
-        </tr>
-      `;
-    }).join('');
+    subscribers.forEach(sub => {
+      const isActive = sub.is_active == 1;
+      const row = document.createElement('tr');
+
+      if (!isActive) {
+        row.className = 'table-secondary';
+      }
+
+      // Email cell - use textContent to prevent XSS (o'hara@example.com, etc.)
+      const emailCell = document.createElement('td');
+      emailCell.textContent = sub.email;
+      row.appendChild(emailCell);
+
+      // Date cell
+      const dateCell = document.createElement('td');
+      dateCell.textContent = formatDate(sub.subscribed_at);
+      row.appendChild(dateCell);
+
+      // Status badge cell
+      const statusCell = document.createElement('td');
+      const badge = document.createElement('span');
+      badge.className = isActive ? 'badge bg-success' : 'badge bg-secondary';
+      badge.textContent = isActive ? 'Active' : 'Archived';
+      statusCell.appendChild(badge);
+      row.appendChild(statusCell);
+
+      // Action button cell: only canonical positive decimal IDs are actionable.
+      const actionCell = document.createElement('td');
+      const subscriberId = String(sub.id);
+      if (!/^[1-9]\d*$/.test(subscriberId)) {
+        row.appendChild(actionCell);
+        tbody.appendChild(row);
+        return;
+      }
+
+      const btn = document.createElement('button');
+      btn.className = isActive
+        ? 'btn btn-sm btn-outline-danger subscriber-action-btn'
+        : 'btn btn-sm btn-outline-success subscriber-action-btn reactivate';
+      btn.setAttribute('data-action', isActive ? 'archive' : 'reactivate');
+      btn.setAttribute('data-subscriber-id', subscriberId);
+
+      const icon = document.createElement('i');
+      icon.className = isActive ? 'bi bi-trash' : 'bi bi-arrow-clockwise';
+      btn.appendChild(icon);
+      btn.appendChild(document.createTextNode(isActive ? ' Archive' : ' Reactivate'));
+
+      actionCell.appendChild(btn);
+      row.appendChild(actionCell);
+
+      tbody.appendChild(row);
+    });
   }
 
-  // Delete (archive) subscriber
-  function deleteSubscriber(id, email) {
+  // Delete (archive) subscriber - called from delegated listener
+  function deleteSubscriber(id) {
+    if (typeof id !== 'number' || id <= 0) return;
+
     currentDeleteId = id;
+    // Don't fetch email from button data - it's not stored there anymore
+    // Use generic modal text instead
     const emailSpan = document.getElementById('deleteSubscriberEmail');
-    if (emailSpan) emailSpan.textContent = email;
+    if (emailSpan) emailSpan.textContent = 'this subscriber';
 
     const modal = new bootstrap.Modal(document.getElementById('deleteSubscriberModal'));
     modal.show();
@@ -446,11 +483,15 @@
     }
   }
 
-  // Reactivate subscriber
-  function reactivateSubscriber(id, email) {
+  // Reactivate subscriber - called from delegated listener
+  function reactivateSubscriber(id) {
+    if (typeof id !== 'number' || id <= 0) return;
+
     currentReactivateId = id;
+    // Don't fetch email from button data - it's not stored there anymore
+    // Use generic modal text instead
     const emailSpan = document.getElementById('reactivateSubscriberEmail');
-    if (emailSpan) emailSpan.textContent = email;
+    if (emailSpan) emailSpan.textContent = 'this subscriber';
 
     const modal = new bootstrap.Modal(document.getElementById('reactivateSubscriberModal'));
     modal.show();
@@ -1250,6 +1291,28 @@
       });
     }
 
+    // Delegated listener for subscriber action buttons (archive/reactivate)
+    // SEC-01: Use event delegation instead of inline handlers
+    document.addEventListener('click', function(e) {
+      const btn = e.target.closest('.subscriber-action-btn');
+      if (!btn) return;
+
+      const action = btn.getAttribute('data-action');
+      const subscriberId = btn.getAttribute('data-subscriber-id');
+
+      if (!subscriberId) return;
+
+      if (!subscriberId || !/^[1-9]\d*$/.test(subscriberId)) return;
+      const id = Number(subscriberId);
+      if (!Number.isSafeInteger(id)) return;
+
+      if (action === 'archive') {
+        deleteSubscriber(id);
+      } else if (action === 'reactivate') {
+        reactivateSubscriber(id);
+      }
+    });
+
     // Add subscriber button
     const addBtn = document.getElementById('btnAddSubscriber');
     if (addBtn) {
@@ -1291,6 +1354,8 @@
   });
 
   // Export functions to global scope
+  // Note: deleteSubscriber and reactivateSubscriber are now called via delegated listeners
+  // They are exported for compatibility but should not be called with email parameter
   window.newsletterAdmin = {
     deleteSubscriber,
     reactivateSubscriber,

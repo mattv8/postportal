@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use PostPortal\Http\ApiHandler;
+use PostPortal\Http\ArchiveValidator;
 use PostPortal\Http\ErrorResponse;
 
 require_once __DIR__ . '/../bootstrap.php';
@@ -23,8 +24,8 @@ ApiHandler::handle(function (): void {
     }
 
     // Create temp directory for backup
-    $tempDir = sys_get_temp_dir() . '/postportal_backup_' . uniqid();
-    if (!mkdir($tempDir, 0755, true)) {
+    $tempDir = sys_get_temp_dir() . '/postportal_backup_' . bin2hex(random_bytes(16));
+    if (!mkdir($tempDir, 0700, true) || @chmod($tempDir, 0700) === false) {
         ErrorResponse::internalError('Failed to create temporary directory');
     }
 
@@ -32,39 +33,21 @@ ApiHandler::handle(function (): void {
         // Step 1: Dump database using the 'export' wrapper command
         // Use full path to avoid shell built-in 'export' command
         $dumpFile = $tempDir . '/database.sql';
-        $exportCmd = sprintf('/usr/local/bin/export > %s 2>&1', escapeshellarg($dumpFile));
+        $exportCmd = sprintf('/usr/local/bin/export > %s 2>/dev/null', escapeshellarg($dumpFile));
 
         $output = [];
         $returnCode = 0;
         exec($exportCmd, $output, $returnCode);
 
-        if ($returnCode !== 0 || !file_exists($dumpFile)) {
-            throw new RuntimeException('Database dump failed: ' . implode("\n", $output));
+        if ($returnCode !== 0 || !is_file($dumpFile) || filesize($dumpFile) === 0) {
+            throw new RuntimeException('Database dump failed');
         }
 
         // Step 2: Copy uploads directory
         $uploadsBackupDir = $tempDir . '/uploads';
-        if (!mkdir($uploadsBackupDir, 0755, true)) {
-            throw new RuntimeException('Failed to create uploads backup directory');
-        }
-
-        // Use rsync for efficient copy with preserved structure
-        $rsyncCmd = sprintf(
-            'rsync -a %s/ %s/ 2>&1',
-            escapeshellarg($uploadsDir),
-            escapeshellarg($uploadsBackupDir)
-        );
-        exec($rsyncCmd, $output, $returnCode);
-
-        if ($returnCode !== 0) {
-            // Fallback to cp if rsync fails
-            $cpCmd = sprintf(
-                'cp -r %s/* %s/ 2>&1',
-                escapeshellarg($uploadsDir),
-                escapeshellarg($uploadsBackupDir)
-            );
-            exec($cpCmd, $output, $returnCode);
-            // Don't fail if uploads dir is empty
+        $uploadsCopy = ArchiveValidator::copyUploadsForBackup($uploadsDir, $uploadsBackupDir);
+        if (!$uploadsCopy['success']) {
+            throw new RuntimeException('Uploads backup failed');
         }
 
         // Step 3: Add metadata
@@ -73,7 +56,9 @@ ApiHandler::handle(function (): void {
             'version' => '1.0',
             'php_version' => PHP_VERSION,
         ];
-        file_put_contents($tempDir . '/backup-meta.json', json_encode($metadata, JSON_PRETTY_PRINT));
+        if (file_put_contents($tempDir . '/backup-meta.json', json_encode($metadata, JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR)) === false) {
+            throw new RuntimeException('Metadata write failed');
+        }
 
         // Step 4: Create tar.gz archive
         $timestamp = date('Y-m-d_His');
@@ -92,7 +77,7 @@ ApiHandler::handle(function (): void {
         }
 
         // Cleanup temp directory
-        exec('rm -rf ' . escapeshellarg($tempDir));
+        ArchiveValidator::cleanupStaging($tempDir);
 
         // Step 5: Stream the archive to the user
         $fileSize = filesize($archivePath);
@@ -127,12 +112,12 @@ ApiHandler::handle(function (): void {
         exit;
     } catch (Throwable $e) {
         // Cleanup on error
-        exec('rm -rf ' . escapeshellarg($tempDir));
+        ArchiveValidator::cleanupStaging($tempDir);
         if (isset($archivePath) && file_exists($archivePath)) {
             @unlink($archivePath);
         }
 
-        error_log('Backup failed: ' . $e->getMessage());
-        ErrorResponse::internalError('Backup failed: ' . $e->getMessage());
+        error_log('Backup operation failed');
+        ErrorResponse::internalError('Backup operation failed');
     }
 });

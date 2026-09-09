@@ -1,30 +1,64 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 echo "==> Initializing database..."
 
-# Set default values from environment variables
-DB_NAME="${MYSQL_DATABASE:-postportal}"
-DB_USER="${MYSQL_USER:-postportal}"
-DB_PASSWORD="${MYSQL_PASSWORD:-postportal}"
-DB_ROOT_PASSWORD="${MYSQL_ROOT_PASSWORD:-root}"
-ADMIN_PASSWORD="${DEFAULT_ADMIN_PASSWORD:-changeme_admin}"
+# All required values are validated by entrypoint before MariaDB starts.
+DB_NAME="$MYSQL_DATABASE"
+DB_USER="$MYSQL_USER"
+DB_PASSWORD="$MYSQL_PASSWORD"
+ADMIN_PASSWORD="$DEFAULT_ADMIN_PASSWORD"
+
+mysql_app() {
+    MYSQL_PWD="$DB_PASSWORD" mysql --protocol=socket -u "$DB_USER" "$DB_NAME" "$@"
+}
+
+hex_value() {
+    printf '%s' "$1" | od -An -tx1 | tr -d ' \n'
+}
 
 # Check if database is already initialized by checking if application user can connect
 # The app user credentials are consistent across restarts (from .env), unlike root password which is randomly generated
 echo "==> Checking if database '${DB_NAME}' already exists..."
 
-if mysql -u "${DB_USER}" -p"${DB_PASSWORD}" -e "SHOW DATABASES LIKE '${DB_NAME}'" 2>/dev/null | grep -q "${DB_NAME}"; then
+if mysql_app -e 'SELECT 1' >/dev/null 2>&1; then
     echo "==> Database already initialized (database '${DB_NAME}' exists), skipping init"
     exit 0
 fi
 
+if ! mysql --protocol=socket -u root -Nse "SHOW DATABASES LIKE '${DB_NAME}'" >/tmp/postportal_database_exists 2>/dev/null; then
+    echo 'ERROR: Existing database is not accessible with MYSQL_USER credentials' >&2
+    exit 1
+fi
+if [ -s /tmp/postportal_database_exists ]; then
+    rm -f /tmp/postportal_database_exists
+    echo 'ERROR: Existing database is not accessible with MYSQL_USER credentials' >&2
+    exit 1
+fi
+rm -f /tmp/postportal_database_exists
+
 echo "==> Initializing fresh database..."
 
 # Initialize database (using unix_socket auth as root for fresh install)
-if ! mysql -u root << EOF
+root_password="${MYSQL_ROOT_PASSWORD:-}"
+if [ -n "$root_password" ]; then
+    :
+else
+    root_password="$(openssl rand -hex 32)"
+    umask 077
+    printf '%s\n' "$root_password" > /var/lib/mysql/.postportal_mysql_root_password
+    chmod 600 /var/lib/mysql/.postportal_mysql_root_password
+fi
+root_password_hex="$(hex_value "$root_password")"
+db_password_hex="$(hex_value "$DB_PASSWORD")"
+
+if ! mysql --protocol=socket -u root <<EOF
 -- Set root password and switch from unix_socket to mysql_native_password
-ALTER USER 'root'@'localhost' IDENTIFIED VIA mysql_native_password USING PASSWORD('${DB_ROOT_PASSWORD}');
+SET @root_password = CONVERT(0x${root_password_hex} USING utf8mb4);
+SET @root_statement = CONCAT("ALTER USER 'root'@'localhost' IDENTIFIED BY ", QUOTE(@root_password));
+PREPARE root_statement FROM @root_statement;
+EXECUTE root_statement;
+DEALLOCATE PREPARE root_statement;
 
 -- Remove anonymous users
 DELETE FROM mysql.global_priv WHERE User='';
@@ -40,8 +74,15 @@ DELETE FROM mysql.db WHERE Db='test' OR Db='test\\_%';
 CREATE DATABASE \`${DB_NAME}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
 -- Create application user for both local and remote connections
-CREATE USER '${DB_USER}'@'%' IDENTIFIED BY '${DB_PASSWORD}';
-CREATE USER '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASSWORD}';
+SET @app_password = CONVERT(0x${db_password_hex} USING utf8mb4);
+SET @create_app_remote = CONCAT("CREATE USER '${DB_USER}'@'%' IDENTIFIED BY ", QUOTE(@app_password));
+PREPARE create_app_remote FROM @create_app_remote;
+EXECUTE create_app_remote;
+DEALLOCATE PREPARE create_app_remote;
+SET @create_app_local = CONCAT("CREATE USER '${DB_USER}'@'localhost' IDENTIFIED BY ", QUOTE(@app_password));
+PREPARE create_app_local FROM @create_app_local;
+EXECUTE create_app_local;
+DEALLOCATE PREPARE create_app_local;
 GRANT ALL PRIVILEGES ON \`${DB_NAME}\`.* TO '${DB_USER}'@'%';
 GRANT ALL PRIVILEGES ON \`${DB_NAME}\`.* TO '${DB_USER}'@'localhost';
 
@@ -49,16 +90,13 @@ GRANT ALL PRIVILEGES ON \`${DB_NAME}\`.* TO '${DB_USER}'@'localhost';
 FLUSH PRIVILEGES;
 EOF
 then
-    echo "ERROR: Failed to initialize database (MySQL connection failed)"
-    echo "This may mean the database is already configured but the check failed"
-    echo "Attempting to continue anyway..."
-    exit 0
+    echo 'ERROR: Failed to initialize fresh database' >&2
+    exit 1
 fi
 
 # Generate password hash for admin user and update after migrations run
-echo "==> Admin password will be set to: ${ADMIN_PASSWORD}"
 echo "==> Generating password hash..."
-ADMIN_PASSWORD_HASH=$(php -r "echo password_hash('${ADMIN_PASSWORD}', PASSWORD_DEFAULT);")
+ADMIN_PASSWORD_HASH=$(php -r 'echo password_hash($argv[1], PASSWORD_DEFAULT);' "$ADMIN_PASSWORD")
 
 if [ -z "$ADMIN_PASSWORD_HASH" ]; then
     echo "ERROR: Failed to generate password hash for admin user"
@@ -66,6 +104,8 @@ if [ -z "$ADMIN_PASSWORD_HASH" ]; then
 fi
 
 # Store the hash in a temp file for use after migrations
-echo "$ADMIN_PASSWORD_HASH" > /tmp/admin_password_hash
+umask 077
+printf '%s\n' "$ADMIN_PASSWORD_HASH" > /tmp/admin_password_hash
+chmod 600 /tmp/admin_password_hash
 
 echo "==> Database initialized successfully"

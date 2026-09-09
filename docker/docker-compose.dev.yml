@@ -7,12 +7,13 @@ services:
     restart: unless-stopped
     ports:
       - "${PORT:-81}:80"
-      - "${MYSQL_PORT:-3306}:3306"
+      - "127.0.0.1:${MYSQL_PORT:-3306}:3306"
     env_file:
       - ../.env
     environment:
       # Database host is always localhost (internal container)
       MYSQL_HOST: localhost
+      MYSQL_BIND_ADDRESS: 0.0.0.0
     volumes:
       # Mount source code for live development
       - ../src:/var/www/html
@@ -23,7 +24,7 @@ services:
       # Database persistence
       - dev_db_data:/var/lib/mysql
       # Application logs
-      - ../logs:/var/www/html/logs
+      - ../logs:/var/log/postportal
     networks:
       - dev-network
 

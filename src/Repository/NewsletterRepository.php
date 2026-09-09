@@ -4,8 +4,6 @@ declare(strict_types=1);
 
 namespace PostPortal\Repository;
 
-use mysqli;
-
 /**
  * Newsletter repository implementation using prepared statements
  */
@@ -63,31 +61,43 @@ class NewsletterRepository extends BaseRepository implements NewsletterRepositor
     }
 
     /**
-     * Create a new subscriber
+     * Find subscriber by ID
      *
-     * @param string $email Email address
-     * @param string|null $verificationToken Verification token
-     * @return int Newly created subscriber ID
+     * @param int $id Subscriber ID
+     * @return array<string, mixed>|null Subscriber data or null if not found
      */
-    public function create(string $email, ?string $verificationToken = null, ?string $ipAddress = null): int
+    public function findById(int $id): ?array
     {
-        $sql = 'INSERT INTO newsletter_subscribers (email, verification_token, ip_address, is_active, subscribed_at, created_at) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)';
-        $isActive = $verificationToken === null ? 1 : 0;
-        $this->execute($sql, [$email, $verificationToken, $ipAddress, $isActive]);
+        $sql = 'SELECT * FROM newsletter_subscribers WHERE id = ? LIMIT 1';
+        return $this->fetchOne($sql, [$id]);
+    }
+
+    public function create(string $email, string $verificationTokenHash, ?string $ipAddress = null): int
+    {
+        $sql = 'INSERT INTO newsletter_subscribers (email, verification_token, verification_token_expires_at, ip_address, is_active, subscribed_at, created_at) VALUES (?, ?, DATE_ADD(UTC_TIMESTAMP(), INTERVAL 24 HOUR), ?, 0, UTC_TIMESTAMP(), UTC_TIMESTAMP())';
+        $this->execute($sql, [$email, $verificationTokenHash, $ipAddress]);
 
         return $this->lastInsertId();
     }
 
     /**
-     * Verify a subscriber
+     * Verify a subscriber using a hashed token.
+     * Token must exist, not be expired, and subscriber must be inactive.
+     * This is atomic: only one subscriber can win the race to verify with this token.
      *
-     * @param string $token Verification token
-     * @return bool True on success
+     * @param string $tokenHash Hashed verification token
+     * @param int $maxAgeSeconds Maximum age of token in seconds (unused, for interface compatibility)
+     * @return bool True on success (exactly one row updated)
      */
-    public function verify(string $token): bool
+    public function verify(string $tokenHash, int $maxAgeSeconds = 86400): bool
     {
-        $sql = 'UPDATE newsletter_subscribers SET is_active = 1, verified_at = NOW() WHERE verification_token = ? AND is_active = 0';
-        $this->execute($sql, [$token]);
+        $sql = 'UPDATE newsletter_subscribers
+                SET is_active = 1, verified_at = UTC_TIMESTAMP(), verification_token = NULL, verification_token_expires_at = NULL, updated_at = UTC_TIMESTAMP()
+                WHERE verification_token = ?
+                  AND verification_token_expires_at > UTC_TIMESTAMP()
+                  AND is_active = 0
+                LIMIT 1';
+        $this->execute($sql, [$tokenHash]);
 
         return $this->affectedRows() > 0;
     }
@@ -100,7 +110,7 @@ class NewsletterRepository extends BaseRepository implements NewsletterRepositor
      */
     public function unsubscribe(string $email): bool
     {
-        $sql = 'UPDATE newsletter_subscribers SET is_active = 0, unsubscribed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE email = ?';
+        $sql = 'UPDATE newsletter_subscribers SET is_active = 0, unsubscribed_at = UTC_TIMESTAMP(), updated_at = UTC_TIMESTAMP() WHERE email = ?';
         $this->execute($sql, [$email]);
 
         return $this->affectedRows() > 0;
@@ -127,25 +137,40 @@ class NewsletterRepository extends BaseRepository implements NewsletterRepositor
         return $this->fetchAll($sql, $params);
     }
 
-    /**
-     * Update subscriber status by id.
-     */
-    public function updateStatus(int $id, bool $isActive): bool
+    public function archive(int $id): bool
     {
-        $sql = 'UPDATE newsletter_subscribers SET is_active = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?';
-        $this->execute($sql, [(int) $isActive, $id]);
+        $sql = 'UPDATE newsletter_subscribers SET is_active = 0, updated_at = UTC_TIMESTAMP() WHERE id = ?';
+        $this->execute($sql, [$id]);
 
         return $this->affectedRows() > 0;
     }
 
-    /**
-     * Reactivate a previously archived subscriber.
-     */
-    public function reactivate(int $id, ?string $ipAddress = null): bool
+    public function setPendingVerification(int $id, string $verificationTokenHash): bool
     {
-        $sql = 'UPDATE newsletter_subscribers SET is_active = 1, subscribed_at = CURRENT_TIMESTAMP, ip_address = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?';
-        $this->execute($sql, [$ipAddress, $id]);
+        $sql = 'UPDATE newsletter_subscribers
+                SET is_active = 0, verification_token = ?, verification_token_expires_at = DATE_ADD(UTC_TIMESTAMP(), INTERVAL 24 HOUR), verified_at = NULL, updated_at = UTC_TIMESTAMP()
+                WHERE id = ?';
+        $this->execute($sql, [$verificationTokenHash, $id]);
 
         return $this->affectedRows() > 0;
+    }
+
+    public function beginNewsletterTransaction(): void
+    {
+        if (!$this->beginTransaction()) {
+            throw new \RuntimeException('Could not start newsletter transaction');
+        }
+    }
+
+    public function commitNewsletterTransaction(): void
+    {
+        if (!$this->commit()) {
+            throw new \RuntimeException('Could not commit newsletter transaction');
+        }
+    }
+
+    public function rollbackNewsletterTransaction(): void
+    {
+        $this->rollback();
     }
 }

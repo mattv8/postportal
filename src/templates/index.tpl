@@ -68,135 +68,138 @@
   {if $page eq 'login'}
     {include file="templates/login.tpl"}
 
-  {* Public pages when unauthenticated *}
-  {elseif ($page eq 'home' or $page eq 'post') and not $authenticated}
-    <nav class="navbar navbar-light bg-white shadow-sm">
-      <div class="container d-flex align-items-center">
-        <a class="navbar-brand fw-bold fs-4 m-0 py-2 d-flex align-items-center" href="?page=home">
-          {if $settings.show_logo && $logo_url}
-            {if $logo_srcset_png && $logo_srcset_webp}
-              <picture>
-                <source type="image/webp" srcset="{$logo_srcset_webp}" />
-                <img src="{$logo_url}" srcset="{$logo_srcset_png}" alt="Logo" style="max-height: 40px; width: auto;" class="me-2" />
-              </picture>
-            {else}
-              <img src="{$logo_url}" alt="Logo" style="max-height: 40px; width: auto;" class="me-2" />
-            {/if}
-          {/if}
-          <span>{if $settings.site_title}{$settings.site_title|escape}{else}Post Portal{/if}</span>
-        </a>
-        <div>
-          <a href="?page=login" class="btn btn-sm btn-outline-primary">Admin Login</a>
-        </div>
-      </div>
-    </nav>
+   {* Public pages when unauthenticated *}
+   {elseif ($page eq 'home' or $page eq 'post') and not $authenticated}
+     <nav class="navbar navbar-light bg-white shadow-sm">
+       <div class="container d-flex align-items-center">
+         <a class="navbar-brand fw-bold fs-4 m-0 py-2 d-flex align-items-center" href="?page=home">
+           {if $settings.show_logo && $logo_url}
+             {if $logo_srcset_png && $logo_srcset_webp}
+               <picture>
+                 <source type="image/webp" srcset="{$logo_srcset_webp}" />
+                 <img src="{$logo_url}" srcset="{$logo_srcset_png}" alt="Logo" style="max-height: 40px; width: auto;" class="me-2" />
+               </picture>
+             {else}
+               <img src="{$logo_url}" alt="Logo" style="max-height: 40px; width: auto;" class="me-2" />
+             {/if}
+           {/if}
+           <span>{if $settings.site_title}{$settings.site_title|escape}{else}Post Portal{/if}</span>
+         </a>
+         <div>
+           <a href="?page=login" class="btn btn-sm btn-outline-primary">Admin Login</a>
+         </div>
+       </div>
+     </nav>
 
-    {if $error or $page eq 'error'}
-      <div class="container mt-4">
-        <div class="alert alert-danger">
-          <i class="fa fa-fw fa-exclamation-circle"></i> {$error}
-        </div>
-      </div>
-    {else}
-      {if file_exists("templates/$page.tpl")}
-        {include file="templates/$page.tpl"}
+     {if $error or $page eq 'error'}
+       <div class="container mt-4">
+         <div class="alert alert-danger">
+           <i class="fa fa-fw fa-exclamation-circle"></i> {$error}
+         </div>
+       </div>
       {else}
-        <div class="container mt-4">
-          <div class="alert alert-danger">
-            <i class="fa fa-fw fa-exclamation-circle"></i> Page not found: {$page}
+        {if $page eq 'home' or $page eq 'post'}
+          {include file="templates/home.tpl"}
+        {else}
+          <div class="container mt-4">
+            <div class="alert alert-danger">
+              <i class="fa fa-fw fa-exclamation-circle"></i> Page not found
+            </div>
           </div>
-        </div>
+        {/if}
       {/if}
-    {/if}
 
-  {* Public pages while authenticated *}
-  {elseif ($page eq 'home' or $page eq 'post') and $authenticated}
-    <nav class="navbar navbar-expand-lg navbar-light bg-white shadow-sm">
-      <div class="container-fluid d-flex align-items-center">
-        <a class="navbar-brand fw-bold fs-4 m-0 py-2 d-flex align-items-center" href="?page=home">
-          {if $settings.show_logo && $logo_url}
-            {if $logo_srcset_png && $logo_srcset_webp}
-              <picture>
-                <source type="image/webp" srcset="{$logo_srcset_webp}" />
-                <img src="{$logo_url}" srcset="{$logo_srcset_png}" alt="Logo" style="max-height: 40px; width: auto;" class="me-2" />
-              </picture>
-            {else}
-              <img src="{$logo_url}" alt="Logo" style="max-height: 40px; width: auto;" class="me-2" />
-            {/if}
-          {/if}
-          <span>{if $settings.site_title}{$settings.site_title|escape}{else}Post Portal{/if}</span>
-        </a>
+    {* Public pages while authenticated *}
+    {elseif ($page eq 'home' or $page eq 'post') and $authenticated}
+     <nav class="navbar navbar-expand-lg navbar-light bg-white shadow-sm">
+       <div class="container-fluid d-flex align-items-center">
+         <a class="navbar-brand fw-bold fs-4 m-0 py-2 d-flex align-items-center" href="?page=home">
+           {if $settings.show_logo && $logo_url}
+             {if $logo_srcset_png && $logo_srcset_webp}
+               <picture>
+                 <source type="image/webp" srcset="{$logo_srcset_webp}" />
+                 <img src="{$logo_url}" srcset="{$logo_srcset_png}" alt="Logo" style="max-height: 40px; width: auto;" class="me-2" />
+               </picture>
+             {else}
+               <img src="{$logo_url}" alt="Logo" style="max-height: 40px; width: auto;" class="me-2" />
+             {/if}
+           {/if}
+           <span>{if $settings.site_title}{$settings.site_title|escape}{else}Post Portal{/if}</span>
+         </a>
 
-        <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
-          <span class="navbar-toggler-icon"></span>
-        </button>
+         <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+           <span class="navbar-toggler-icon"></span>
+         </button>
 
-        <div class="collapse navbar-collapse" id="navbarNav">
-          <ul class="navbar-nav ms-auto">
-            {if $isadmin}
-            <li class="nav-item">
-              <a class="nav-link" href="?page=admin"><i class="fa fa-fw fa-cog"></i> Admin Dashboard</a>
-            </li>
-            {/if}
-            <li class="nav-item">
-              <button class="nav-link btn btn-link" data-bs-toggle="modal" data-bs-target="#createPostModal">
-                <i class="fa fa-fw fa-plus"></i> Create Post
-              </button>
-            </li>
-            <li class="nav-item">
-              <button class="nav-link btn btn-link" onclick="logoff()"><i class="fa fa-fw fa-sign-out"></i> Logout</button>
-            </li>
-          </ul>
-        </div>
-      </div>
-    </nav>
+         <div class="collapse navbar-collapse" id="navbarNav">
+           <ul class="navbar-nav ms-auto">
+             {if $isadmin}
+              <li class="nav-item">
+                <a class="nav-link" href="?page=admin"><i class="fa fa-fw fa-cog"></i> Admin Dashboard</a>
+              </li>
+              <li class="nav-item">
+                <button class="nav-link btn btn-link" data-bs-toggle="modal" data-bs-target="#createPostModal">
+                  <i class="fa fa-fw fa-plus"></i> Create Post
+                </button>
+              </li>
+              {/if}
+             <li class="nav-item">
+               <button class="nav-link btn btn-link" onclick="logoff()"><i class="fa fa-fw fa-sign-out"></i> Logout</button>
+             </li>
+           </ul>
+         </div>
+       </div>
+     </nav>
 
-    {if $error or $page eq 'error'}
-      <div class="container mt-4">
-        <div class="alert alert-danger">
-          <i class="fa fa-fw fa-exclamation-circle"></i> {$error}
-        </div>
-      </div>
-    {else}
-      {if file_exists("templates/$page.tpl")}
-        {include file="templates/$page.tpl"}
+     {if $error or $page eq 'error'}
+       <div class="container mt-4">
+         <div class="alert alert-danger">
+           <i class="fa fa-fw fa-exclamation-circle"></i> {$error}
+         </div>
+       </div>
       {else}
-        <div class="container mt-4">
-          <div class="alert alert-danger">
-            <i class="fa fa-fw fa-exclamation-circle"></i> Page not found: {$page}
+        {if $page eq 'home' or $page eq 'post'}
+          {include file="templates/home.tpl"}
+        {else}
+          <div class="container mt-4">
+            <div class="alert alert-danger">
+              <i class="fa fa-fw fa-exclamation-circle"></i> Page not found
+            </div>
           </div>
-        </div>
+        {/if}
       {/if}
-    {/if}
 
-    {include file='templates/modals/create_post.tpl'}
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.6.1/cropper.min.css" />
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.6.1/cropper.min.js"></script>
+     {if $isadmin}
+     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.6.1/cropper.min.css" />
+     <script src="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.6.1/cropper.min.js"></script>
     {if $_bundle_mode}
     <script defer src="{bundle_url name='post-modal.bundle.js'}"></script>
     {else}
     <script defer src="{asset_js file='image-crop-manager.js'}"></script>
-    <script defer src="{asset_js file='post-modal.js'}"></script>
-    {/if}
+     <script defer src="{asset_js file='post-modal.js'}"></script>
+     {/if}
+     {/if}
 
-  {* Authenticated/Admin layout *}
-  {else}
-    <div class="container-fluid inset-3">
-      <div class="panel panel-success {$page_bg_color_class}">
-        {include file="templates/menu.tpl"}
+   {* Authenticated/Admin layout *}
+   {else}
+     <div class="container-fluid inset-3">
+       <div class="panel panel-success {$page_bg_color_class}">
+         {include file="templates/menu.tpl"}
 
-        <div class="container-fluid px-0" id="page-content">
-          {if $error or $page eq 'error'}
-            <div class="alert alert-danger"><i class="fa fa-fw fa-exclamation-circle"></i> {$error}</div>
-          {elseif file_exists("templates/$page.tpl")}
-            {include file="templates/$page.tpl"}
-          {else}
-            <div class="alert alert-danger"><i class="fa fa-fw fa-exclamation-circle"></i> Page not found: {$page}</div>
-          {/if}
-        </div>
-      </div>
-    </div>
-  {/if}
+         <div class="container-fluid px-0" id="page-content">
+           {if $error or $page eq 'error'}
+             <div class="alert alert-danger"><i class="fa fa-fw fa-exclamation-circle"></i> {$error}</div>
+           {elseif $page eq 'admin'}
+             {include file="templates/admin.tpl"}
+           {elseif $page eq 'login'}
+             {include file="templates/login.tpl"}
+           {else}
+             <div class="alert alert-danger"><i class="fa fa-fw fa-exclamation-circle"></i> Page not found</div>
+           {/if}
+         </div>
+       </div>
+     </div>
+   {/if}
 
   {if $_bundle_mode}
   <script defer src="{bundle_url name='auth.bundle.js'}"></script>

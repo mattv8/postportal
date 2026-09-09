@@ -16,17 +16,17 @@
     </style>
 </head>
 <body>
-    <div class='header'>
-        <h1>{$site_title}</h1>
-    </div>
-    <div class='content'>
-        <div class='message'>{$author_name} has posted an update!</div>
-        <div class='excerpt'>{$excerpt|truncate:250:"…"}</div>
-        <a href='{$post_url}' class='cta-button'>Read the Full Update</a>
-    </div>
-    <div class='footer'>
-        <p>You're receiving this because you subscribed to updates from {$site_title}.</p>
-        <p><a href='{$base_url}'>Visit our site</a> | <a href='{$unsubscribe_url}'>Unsubscribe</a></p>
-    </div>
+     <div class='header'>
+          <h1>{$site_title|escape:'htmlall'}</h1>
+     </div>
+     <div class='content'>
+          <div class='message'>{$author_name|escape:'htmlall'} has posted an update!</div>
+          <div class='excerpt'>{$excerpt|escape:'htmlall'|truncate:250:"…"}</div>
+          <a href='{$post_url|escape:'htmlall'}' class='cta-button'>Read the Full Update</a>
+     </div>
+     <div class='footer'>
+          <p>You're receiving this because you subscribed to updates from {$site_title|escape:'htmlall'}.</p>
+          <p><a href='{$base_url|escape:'htmlall'}'>Visit our site</a> | <a href='{$unsubscribe_url|escape:'htmlall'}'>Unsubscribe</a></p>
+     </div>
 </body>
 </html>

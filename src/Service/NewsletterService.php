@@ -6,246 +6,200 @@ namespace PostPortal\Service;
 
 use PostPortal\Repository\NewsletterRepositoryInterface;
 
-/**
- * Newsletter service for business logic around newsletter operations
- */
-class NewsletterService implements NewsletterServiceInterface
+final class NewsletterService implements NewsletterServiceInterface
 {
-    private NewsletterRepositoryInterface $newsletterRepository;
+    private const TOKEN_EXPIRY_SECONDS = 86400;
+    private const PUBLIC_SUCCESS = ['success' => true, 'message' => 'Thank you for your interest'];
 
-    public function __construct(NewsletterRepositoryInterface $newsletterRepository)
-    {
-        $this->newsletterRepository = $newsletterRepository;
+    public function __construct(
+        private NewsletterRepositoryInterface $newsletterRepository,
+        private NewsletterVerificationMailerInterface $verificationMailer
+    ) {
     }
 
-    /**
-     * Subscribe an email to the newsletter
-     *
-     * @param string $email Email address
-     * @param string|null $ipAddress Optional IP address for logging
-     * @return array{success: bool, id?: int, message?: string, error?: string}
-     */
     public function subscribe(string $email, ?string $ipAddress = null): array
     {
-        try {
-            $email = strtolower(trim($email));
-
-            if (!filter_var($email, FILTER_VALIDATE_EMAIL) || strlen($email) > 255) {
-                return ['success' => false, 'error' => 'Invalid email format'];
-            }
-
-            // Check if already subscribed
-            $existing = $this->newsletterRepository->findByEmail($email);
-            if ($existing) {
-                if ($existing['is_active']) {
-                    return [
-                        'success' => true,
-                        'message' => 'Already subscribed',
-                        'already_subscribed' => true
-                    ];
-                }
-                $reactivated = $this->newsletterRepository->reactivate((int) $existing['id'], $ipAddress);
-
-                if ($reactivated) {
-                    return [
-                        'success' => true,
-                        'message' => 'Successfully resubscribed to the mailing list',
-                        'resubscribed' => true,
-                    ];
-                }
-
-                return ['success' => false, 'error' => 'Failed to resubscribe'];
-            }
-
-            $id = $this->newsletterRepository->create($email, null, $ipAddress);
-
-            return [
-                'success' => true,
-                'id' => $id,
-                'message' => 'Successfully subscribed'
-            ];
-        } catch (\Throwable $e) {
-            error_log('NewsletterService::subscribe error: ' . $e->getMessage());
-            return ['success' => false, 'error' => 'Failed to subscribe'];
+        $email = $this->normalizeEmail($email);
+        if ($email === null) {
+            return ['success' => false, 'error' => 'Unable to process subscription at this time'];
         }
+
+        try {
+            if ($this->newsletterRepository->findByEmail($email) !== null) {
+                return self::PUBLIC_SUCCESS;
+            }
+
+            $this->createAndMailPendingSubscriber($email, $ipAddress);
+        } catch (\Throwable) {
+            // Do not log request identifiers, tokens, or transport diagnostics.
+            error_log('Newsletter subscription processing failed');
+        }
+
+        // A valid public request has one indistinguishable response regardless of state or delivery.
+        return self::PUBLIC_SUCCESS;
     }
 
-    /**
-     * Unsubscribe an email from the newsletter
-     *
-     * @param string $email Email address
-     * @return array{success: bool, message?: string, error?: string}
-     */
     public function unsubscribe(string $email): array
     {
         try {
-            $success = $this->newsletterRepository->unsubscribe($email);
-
-            if ($success) {
-                return ['success' => true, 'message' => 'Successfully unsubscribed'];
-            }
-
-            return ['success' => false, 'error' => 'Email not found'];
-        } catch (\Throwable $e) {
-            error_log('NewsletterService::unsubscribe error: ' . $e->getMessage());
+            return $this->newsletterRepository->unsubscribe($email)
+                ? ['success' => true, 'message' => 'Successfully unsubscribed']
+                : ['success' => false, 'error' => 'Email not found'];
+        } catch (\Throwable) {
+            error_log('Newsletter unsubscribe processing failed');
             return ['success' => false, 'error' => 'Failed to unsubscribe'];
         }
     }
 
-    /**
-     * Verify a subscriber using verification token
-     *
-     * @param string $token Verification token
-     * @return array{success: bool, message?: string, error?: string}
-     */
-    public function verifySubscriber(string $token): array
+    public function verifySubscriber(string $rawToken): array
     {
+        if (!preg_match('/\A[a-f0-9]{64}\z/', $rawToken)) {
+            return ['success' => false, 'error' => 'Invalid or expired verification link'];
+        }
+
         try {
-            $success = $this->newsletterRepository->verify($token);
-
-            if ($success) {
-                return ['success' => true, 'message' => 'Email verified successfully'];
-            }
-
-            return ['success' => false, 'error' => 'Invalid or expired token'];
-        } catch (\Throwable $e) {
-            error_log('NewsletterService::verifySubscriber error: ' . $e->getMessage());
-            return ['success' => false, 'error' => 'Failed to verify'];
+            return $this->newsletterRepository->verify(hash('sha256', $rawToken), self::TOKEN_EXPIRY_SECONDS)
+                ? ['success' => true, 'message' => 'Thank you! You have been added to our mailing list']
+                : ['success' => false, 'error' => 'Invalid or expired verification link'];
+        } catch (\Throwable) {
+            error_log('Newsletter verification processing failed');
+            return ['success' => false, 'error' => 'Unable to process verification at this time'];
         }
     }
 
-    /**
-     * Get active subscriber count
-     *
-     * @return int
-     */
     public function getActiveSubscriberCount(): int
     {
         try {
             return $this->newsletterRepository->getActiveSubscriberCount();
-        } catch (\Throwable $e) {
-            error_log('NewsletterService::getActiveSubscriberCount error: ' . $e->getMessage());
+        } catch (\Throwable) {
+            error_log('Newsletter subscriber count lookup failed');
             return 0;
         }
     }
 
-    /**
-     * Get total subscriber count
-     *
-     * @return int
-     */
     public function getTotalSubscriberCount(): int
     {
         try {
             return $this->newsletterRepository->getTotalSubscriberCount();
-        } catch (\Throwable $e) {
-            error_log('NewsletterService::getTotalSubscriberCount error: ' . $e->getMessage());
+        } catch (\Throwable) {
+            error_log('Newsletter subscriber count lookup failed');
             return 0;
         }
     }
 
-    /**
-     * Get all active subscriber emails
-     *
-     * @return array<int, string>
-     */
     public function getActiveSubscriberEmails(): array
     {
         try {
             return $this->newsletterRepository->getActiveSubscriberEmails();
-        } catch (\Throwable $e) {
-            error_log('NewsletterService::getActiveSubscriberEmails error: ' . $e->getMessage());
+        } catch (\Throwable) {
+            error_log('Newsletter subscriber list lookup failed');
             return [];
         }
     }
 
-    /**
-     * Get subscribers with optional active filter.
-     *
-     * @return array<int, array<string, mixed>>
-     */
     public function getSubscribers(bool $activeOnly = true): array
     {
         try {
             return $this->newsletterRepository->getSubscribers($activeOnly);
-        } catch (\Throwable $e) {
-            error_log('NewsletterService::getSubscribers error: ' . $e->getMessage());
+        } catch (\Throwable) {
+            error_log('Newsletter subscriber list lookup failed');
             return [];
         }
     }
 
-    /**
-     * Update subscriber active status.
-     *
-     * @return array{success: bool, message?: string, error?: string}
-     */
     public function updateSubscriberStatus(int $id, bool $isActive): array
     {
+        return $isActive ? $this->reactivateSubscriber($id) : $this->archiveSubscriber($id);
+    }
+
+    public function archiveSubscriber(int $id): array
+    {
         try {
-            $updated = $this->newsletterRepository->updateStatus($id, $isActive);
-            if (!$updated) {
+            return $this->newsletterRepository->archive($id)
+                ? ['success' => true, 'message' => 'Subscriber archived successfully']
+                : ['success' => false, 'error' => 'Subscriber not found'];
+        } catch (\Throwable) {
+            error_log('Newsletter archive processing failed');
+            return ['success' => false, 'error' => 'Failed to archive subscriber'];
+        }
+    }
+
+    public function reactivateSubscriber(int $id): array
+    {
+        try {
+            $subscriber = $this->newsletterRepository->findById($id);
+            if ($subscriber === null) {
                 return ['success' => false, 'error' => 'Subscriber not found'];
             }
 
-            return ['success' => true, 'message' => 'Subscriber updated successfully'];
-        } catch (\Throwable $e) {
-            error_log('NewsletterService::updateSubscriberStatus error: ' . $e->getMessage());
-            return ['success' => false, 'error' => 'Failed to update subscriber'];
+            $this->newsletterRepository->beginNewsletterTransaction();
+            try {
+                $rawToken = $this->newRawToken();
+                if (!$this->newsletterRepository->setPendingVerification($id, hash('sha256', $rawToken))) {
+                    throw new \RuntimeException('Subscriber update failed');
+                }
+                if (!$this->verificationMailer->sendVerificationEmail((string) $subscriber['email'], $rawToken)) {
+                    throw new \RuntimeException('Verification mail delivery failed');
+                }
+                $this->newsletterRepository->commitNewsletterTransaction();
+            } catch (\Throwable $exception) {
+                $this->newsletterRepository->rollbackNewsletterTransaction();
+                throw $exception;
+            }
+
+            return ['success' => true, 'message' => 'Subscriber reactivation queued - verification email sent'];
+        } catch (\Throwable) {
+            error_log('Newsletter reactivation processing failed');
+            return ['success' => false, 'error' => 'Failed to reactivate subscriber'];
         }
     }
 
-    /**
-     * Archive (deactivate) a subscriber.
-     *
-     * @return array{success: bool, message?: string, error?: string}
-     */
-    public function archiveSubscriber(int $id): array
-    {
-        return $this->updateSubscriberStatus($id, false);
-    }
-
-    /**
-     * Reactivate a subscriber (admin action).
-     *
-     * @return array{success: bool, message?: string, error?: string}
-     */
-    public function reactivateSubscriber(int $id): array
-    {
-        return $this->updateSubscriberStatus($id, true);
-    }
-
-    /**
-     * Add a subscriber via admin panel.
-     *
-     * @return array{success: bool, id?: int, message?: string, error?: string}
-     */
     public function addSubscriber(string $email): array
     {
+        $email = $this->normalizeEmail($email);
+        if ($email === null) {
+            return ['success' => false, 'error' => 'Invalid email format'];
+        }
+
         try {
-            if (!filter_var($email, FILTER_VALIDATE_EMAIL) || strlen($email) > 255) {
-                return ['success' => false, 'error' => 'Invalid email format'];
+            if ($this->newsletterRepository->findByEmail($email) !== null) {
+                return ['success' => false, 'error' => 'Email already exists'];
             }
-
-            $email = strtolower($email);
-            $existing = $this->newsletterRepository->findByEmail($email);
-            if ($existing) {
-                return [
-                    'success' => false,
-                    'error' => 'Email already exists',
-                    'is_active' => (bool) ($existing['is_active'] ?? false),
-                ];
-            }
-
-            $id = $this->newsletterRepository->create($email, null, null);
-
-            return [
-                'success' => true,
-                'message' => 'Subscriber added successfully',
-                'id' => $id,
-            ];
-        } catch (\Throwable $e) {
-            error_log('NewsletterService::addSubscriber error: ' . $e->getMessage());
+            $id = $this->createAndMailPendingSubscriber($email, null);
+            return ['success' => true, 'message' => 'Verification email sent', 'id' => $id];
+        } catch (\Throwable) {
+            error_log('Newsletter admin add processing failed');
             return ['success' => false, 'error' => 'Failed to add subscriber'];
         }
+    }
+
+    private function createAndMailPendingSubscriber(string $email, ?string $ipAddress): int
+    {
+        $this->newsletterRepository->beginNewsletterTransaction();
+        try {
+            $rawToken = $this->newRawToken();
+            $id = $this->newsletterRepository->create($email, hash('sha256', $rawToken), $ipAddress);
+            if (!$this->verificationMailer->sendVerificationEmail($email, $rawToken)) {
+                throw new \RuntimeException('Verification mail delivery failed');
+            }
+            $this->newsletterRepository->commitNewsletterTransaction();
+            return $id;
+        } catch (\Throwable $exception) {
+            $this->newsletterRepository->rollbackNewsletterTransaction();
+            throw $exception;
+        }
+    }
+
+    private function normalizeEmail(string $email): ?string
+    {
+        $normalized = strtolower(trim($email));
+        return strlen($normalized) <= 255 && filter_var($normalized, FILTER_VALIDATE_EMAIL) !== false
+            ? $normalized
+            : null;
+    }
+
+    private function newRawToken(): string
+    {
+        return bin2hex(random_bytes(32));
     }
 }

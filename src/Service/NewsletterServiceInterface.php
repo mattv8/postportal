@@ -14,7 +14,7 @@ interface NewsletterServiceInterface
      *
      * @param string $email Email address
      * @param string|null $ipAddress Optional IP address for logging
-     * @return array{success: bool, id?: int, message?: string, error?: string}
+     * @return array{success: bool, message?: string, error?: string}
      */
     public function subscribe(string $email, ?string $ipAddress = null): array;
 

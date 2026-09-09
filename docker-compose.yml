@@ -12,7 +12,7 @@ services:
       MYSQL_HOST: localhost
     volumes:
       - db_data:/var/lib/mysql
-      - ./logs:/var/www/html/logs
+      - ./logs:/var/log/postportal
       - ./storage:/var/www/html/storage
     networks:
       - postportal-network

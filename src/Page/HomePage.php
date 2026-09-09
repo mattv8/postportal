@@ -41,9 +41,10 @@ class HomePage
         $settings = $this->applyDefaults($settings);
 
         $isAuthenticated = !empty($_SESSION['authenticated']);
+        $isAdmin = ($_SESSION['isadmin'] ?? null) === true;
 
         // For admins, include draft posts; for public, only published
-        if ($isAuthenticated) {
+        if ($isAdmin) {
             $posts = $this->postService->getPostsIncludingDrafts(5, 0);
         } else {
             $posts = $this->postService->getPublishedPosts(5, 0);
@@ -77,6 +78,7 @@ class HomePage
             'favicon_512' => $faviconUrls['favicon_512'],
             'page_title' => $settings['site_title'] ?? '',
             'is_authenticated' => $isAuthenticated,
+            'is_admin' => $isAdmin,
         ];
     }
 

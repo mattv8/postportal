@@ -8,6 +8,8 @@ use mysqli;
 use PostPortal\Repository\PostRepository;
 use PostPortal\Repository\MediaRepository;
 use PostPortal\Repository\NewsletterRepository;
+use PostPortal\Repository\NewsletterThrottleRepository;
+use PostPortal\Repository\NewsletterThrottleRepositoryInterface;
 use PostPortal\Repository\SettingsRepository;
 use PostPortal\Repository\UserRepository;
 use PostPortal\Service\PostService;
@@ -16,8 +18,11 @@ use PostPortal\Service\MediaService;
 use PostPortal\Service\MediaServiceInterface;
 use PostPortal\Service\NewsletterService;
 use PostPortal\Service\NewsletterServiceInterface;
+use PostPortal\Service\NewsletterVerificationMailer;
+use PostPortal\Service\NewsletterVerificationMailerInterface;
 use PostPortal\Service\UserService;
 use PostPortal\Service\UserServiceInterface;
+use Smarty\Smarty;
 
 /**
  * Simple service container for dependency injection
@@ -91,6 +96,15 @@ class ServiceContainer
         return $this->services['NewsletterRepository'];
     }
 
+    public function getNewsletterThrottleRepository(): NewsletterThrottleRepositoryInterface
+    {
+        if (!isset($this->services['NewsletterThrottleRepository'])) {
+            $this->services['NewsletterThrottleRepository'] = new NewsletterThrottleRepository($this->db);
+        }
+        /** @var NewsletterThrottleRepositoryInterface */
+        return $this->services['NewsletterThrottleRepository'];
+    }
+
     /**
      * Get SettingsRepository instance
      */
@@ -140,7 +154,8 @@ class ServiceContainer
     {
         if (!isset($this->services['NewsletterService'])) {
             $this->services['NewsletterService'] = new NewsletterService(
-                $this->getNewsletterRepository()
+                $this->getNewsletterRepository(),
+                $this->getNewsletterVerificationMailer()
             );
         }
         /** @var NewsletterServiceInterface */
@@ -171,6 +186,34 @@ class ServiceContainer
         }
         /** @var UserServiceInterface */
         return $this->services['UserService'];
+    }
+
+    /**
+     * Get NewsletterVerificationMailer instance
+     */
+    public function getNewsletterVerificationMailer(): NewsletterVerificationMailerInterface
+    {
+        if (!isset($this->services['NewsletterVerificationMailer'])) {
+            global $smarty;
+            $smartyInstance = $smarty instanceof Smarty ? $smarty : null;
+            if ($smartyInstance === null) {
+                $templateDir = dirname(__DIR__) . '/templates';
+                $cacheDir = dirname(__DIR__) . '/cache';
+                if (!is_dir($templateDir) || !is_dir($cacheDir) || !is_writable($cacheDir)) {
+                    throw new \RuntimeException('Newsletter template cache is not configured');
+                }
+                $smartyInstance = new Smarty();
+                $smartyInstance->setTemplateDir([$templateDir, dirname(__DIR__)]);
+                $smartyInstance->setCompileDir($cacheDir);
+                $smartyInstance->setCacheDir($cacheDir);
+            }
+            $this->services['NewsletterVerificationMailer'] = new NewsletterVerificationMailer(
+                $this->getSettingsRepository(),
+                $smartyInstance
+            );
+        }
+        /** @var NewsletterVerificationMailerInterface */
+        return $this->services['NewsletterVerificationMailer'];
     }
 
     /**

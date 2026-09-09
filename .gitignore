@@ -19,3 +19,6 @@ src/storage/uploads/*
 # Config
 .env
 docker/.env
+
+# Agent Scratch
+.opencode/
