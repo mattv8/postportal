@@ -138,6 +138,31 @@ class CIPolicyTest extends TestCase
         );
     }
 
+    public function testComposerMetadataDeclaresMitLicense(): void
+    {
+        $composerPath = __DIR__ . '/../../composer.json';
+        $composer = json_decode(file_get_contents($composerPath), associative: true);
+
+        $this->assertIsArray($composer);
+        $this->assertSame('MIT', $composer['license'] ?? null);
+    }
+
+    public function testComposerContainersTrustOnlyMountedRepository(): void
+    {
+        $workflowPath = __DIR__ . '/../../.github/workflows/build-container.yml';
+        $yaml = file_get_contents($workflowPath);
+
+        $this->assertIsString($yaml);
+        $jobs = $this->parseWorkflowJobs($yaml);
+        $this->assertArrayHasKey('composer-audit', $jobs);
+
+        $composerJob = $jobs['composer-audit'];
+        $this->assertSame(2, substr_count($composerJob, '--env GIT_CONFIG_COUNT=1'));
+        $this->assertSame(2, substr_count($composerJob, '--env GIT_CONFIG_KEY_0=safe.directory'));
+        $this->assertSame(2, substr_count($composerJob, '--env GIT_CONFIG_VALUE_0=/app'));
+        $this->assertStringNotContainsString('safe.directory=*', $composerJob);
+    }
+
     /**
      * Test workflow structure: top-level jobs, permissions, DAG, and digest subject.
      * Parses YAML line-by-line bounded by job names to avoid cross-job interference.

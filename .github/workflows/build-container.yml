@@ -43,10 +43,24 @@ jobs:
         uses: actions/checkout@d632683dd7b4114ad314bca15554477dd762a938 # v4.2.0
 
       - name: Validate composer.json and composer.lock
-        run: docker run --rm --volume "$PWD:/app:ro" --workdir /app composer:2 validate --strict
+        run: |
+          docker run --rm \
+            --env GIT_CONFIG_COUNT=1 \
+            --env GIT_CONFIG_KEY_0=safe.directory \
+            --env GIT_CONFIG_VALUE_0=/app \
+            --volume "$PWD:/app:ro" \
+            --workdir /app \
+            composer:2 validate --strict
 
       - name: Audit dependencies for security advisories
-        run: docker run --rm --volume "$PWD:/app:ro" --workdir /app composer:2 audit --locked --no-interaction
+        run: |
+          docker run --rm \
+            --env GIT_CONFIG_COUNT=1 \
+            --env GIT_CONFIG_KEY_0=safe.directory \
+            --env GIT_CONFIG_VALUE_0=/app \
+            --volume "$PWD:/app:ro" \
+            --workdir /app \
+            composer:2 audit --locked --no-interaction
 
   build-and-push:
     name: Build and Push Container Image

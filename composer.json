@@ -1,6 +1,7 @@
 {
     "name": "elfy/post-portal",
     "description": "A flexible post and update platform built on PHP and Smarty",
+    "license": "MIT",
     "require": {
         "php": "^8.1",
         "intervention/image": "^2.7",
