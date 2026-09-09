@@ -27,10 +27,20 @@ A flexible post and update platform built on PHP with Smarty templates, featurin
    # Database Configuration (MariaDB)
    MYSQL_DATABASE=postportal
    MYSQL_USER=postportal
-   MYSQL_PASSWORD=changeme
+   # Required: at least 16 characters; do not use a placeholder.
+   MYSQL_PASSWORD=
 
-   # Default admin user password (used on first database initialization)
-   DEFAULT_ADMIN_PASSWORD=changeme_admin
+   # Required only for the first database initialization; at least 16 characters.
+   DEFAULT_ADMIN_PASSWORD=
+
+   # Required application secrets. Generate independently, for example:
+   # APP_ENCRYPTION_KEY: openssl rand -hex 32
+   # UNSUBSCRIBE_SECRET: openssl rand -base64 48
+   APP_ENCRYPTION_KEY=
+   UNSUBSCRIBE_SECRET=
+
+   # Required canonical public URL (absolute http/https; no credentials, query, or fragment).
+   APP_URL=
 
    # OpenAI API Configuration
    # Get your API key from: https://platform.openai.com/api-keys
@@ -97,7 +107,7 @@ A flexible post and update platform built on PHP with Smarty templates, featurin
          MYSQL_HOST: localhost
        volumes:
          - db_data:/var/lib/mysql
-         - ./logs:/var/www/html/logs
+         - ./logs:/var/log/postportal
          - ./storage:/var/www/html/storage
        networks:
          - postportal-network
