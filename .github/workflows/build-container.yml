@@ -185,14 +185,15 @@ jobs:
           password: ${{ secrets.HARBOR_PASSWORD }}
 
       - name: Generate SBOM
-        uses: anchore/sbom-action@7ccf588e3cf3cc2611714c2eeae48550fbc17552 # v0.15.11
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
         with:
           image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-and-push.outputs.digest }}
           format: spdx-json
           output-file: sbom.spdx.json
+          upload-artifact: false
 
       - name: Upload SBOM
-        uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808 # v4.3.3
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sbom-${{ needs.build-and-push.outputs.branch }}
           path: sbom.spdx.json

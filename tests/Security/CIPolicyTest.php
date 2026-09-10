@@ -163,6 +163,22 @@ class CIPolicyTest extends TestCase
         $this->assertStringNotContainsString('safe.directory=*', $composerJob);
     }
 
+    public function testSbomUsesSingleExplicitArtifactUpload(): void
+    {
+        $workflowPath = __DIR__ . '/../../.github/workflows/build-container.yml';
+        $yaml = file_get_contents($workflowPath);
+
+        $this->assertIsString($yaml);
+        $jobs = $this->parseWorkflowJobs($yaml);
+        $this->assertArrayHasKey('sbom', $jobs);
+
+        $sbomJob = $jobs['sbom'];
+        $this->assertStringContainsString('upload-artifact: false', $sbomJob);
+        $this->assertSame(1, substr_count($sbomJob, 'uses: actions/upload-artifact@'));
+        $this->assertStringContainsString('output-file: sbom.spdx.json', $sbomJob);
+        $this->assertStringContainsString('path: sbom.spdx.json', $sbomJob);
+    }
+
     /**
      * Test workflow structure: top-level jobs, permissions, DAG, and digest subject.
      * Parses YAML line-by-line bounded by job names to avoid cross-job interference.
