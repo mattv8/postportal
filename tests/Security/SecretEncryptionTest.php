@@ -4,17 +4,17 @@ declare(strict_types=1);
 
 namespace PostPortal\Tests\Security;
 
+use PostPortal\Security\AppKeyDeriver;
 use PHPUnit\Framework\TestCase;
 
 /**
- * Test suite for cryptographic primitives: v2 SMTP encryption, v2 unsubscribe tokens, canonical URL.
+ * Test suite for cryptographic primitives: v3 SMTP encryption, v2 unsubscribe tokens, canonical URL.
  *
  * All tests exercise real crypto and validation logic.
  */
 class SecretEncryptionTest extends TestCase
 {
-    private string $originalAppKey;
-    private string $originalUnsubKey;
+    private string $originalAppSecret;
     private string $originalAppUrl;
 
     protected function setUp(): void
@@ -22,23 +22,16 @@ class SecretEncryptionTest extends TestCase
         require_once __DIR__ . '/../../vendor/autoload.php';
         require_once __DIR__ . '/../../src/functions.php';
 
-        $this->originalAppKey = getenv('APP_ENCRYPTION_KEY') ?: '';
-        $this->originalUnsubKey = getenv('UNSUBSCRIBE_SECRET') ?: '';
+        $this->originalAppSecret = getenv('APP_SECRET') ?: '';
         $this->originalAppUrl = getenv('APP_URL') ?: '';
     }
 
     protected function tearDown(): void
     {
-        if ($this->originalAppKey) {
-            putenv("APP_ENCRYPTION_KEY={$this->originalAppKey}");
+        if ($this->originalAppSecret) {
+            putenv("APP_SECRET={$this->originalAppSecret}");
         } else {
-            putenv('APP_ENCRYPTION_KEY');
-        }
-
-        if ($this->originalUnsubKey) {
-            putenv("UNSUBSCRIBE_SECRET={$this->originalUnsubKey}");
-        } else {
-            putenv('UNSUBSCRIBE_SECRET');
+            putenv('APP_SECRET');
         }
 
         if ($this->originalAppUrl) {
@@ -52,7 +45,7 @@ class SecretEncryptionTest extends TestCase
 
     public function testSmtpEncryptionRoundTrip(): void
     {
-        putenv('APP_ENCRYPTION_KEY=' . $this->validEncryptionKey());
+        putenv('APP_SECRET=' . $this->validAppSecret());
 
         $password = 'test-smtp-password-123456789';
         $encrypted = encryptSmtpPassword($password);
@@ -66,7 +59,7 @@ class SecretEncryptionTest extends TestCase
 
     public function testSmtpEncryptionRandomNonce(): void
     {
-        putenv('APP_ENCRYPTION_KEY=' . $this->validEncryptionKey());
+        putenv('APP_SECRET=' . $this->validAppSecret());
 
         $password = 'same-password';
         $enc1 = encryptSmtpPassword($password);
@@ -82,7 +75,7 @@ class SecretEncryptionTest extends TestCase
 
     public function testSmtpEncryptionTamperDetection(): void
     {
-        putenv('APP_ENCRYPTION_KEY=' . $this->validEncryptionKey());
+        putenv('APP_SECRET=' . $this->validAppSecret());
 
         $password = 'secret-password';
         $encrypted = encryptSmtpPassword($password);
@@ -101,14 +94,14 @@ class SecretEncryptionTest extends TestCase
 
     public function testSmtpEncryptionVersionMutation(): void
     {
-        putenv('APP_ENCRYPTION_KEY=' . $this->validEncryptionKey());
+        putenv('APP_SECRET=' . $this->validAppSecret());
 
         $password = 'test';
         $encrypted = encryptSmtpPassword($password);
 
         // Mutate version byte
         $envelope = base64_decode($encrypted, true);
-        $mutated = base64_encode(chr(1) . substr($envelope, 1)); // Change v2 to v1
+        $mutated = base64_encode(chr(1) . substr($envelope, 1)); // Change v3 to v1
         $decrypted = decryptSmtpPassword($mutated);
 
         $this->assertNotSame($password, $decrypted, 'Different version must not decrypt');
@@ -116,7 +109,7 @@ class SecretEncryptionTest extends TestCase
 
     public function testSmtpEncryptionNonceMutation(): void
     {
-        putenv('APP_ENCRYPTION_KEY=' . $this->validEncryptionKey());
+        putenv('APP_SECRET=' . $this->validAppSecret());
 
         $password = 'test';
         $encrypted = encryptSmtpPassword($password);
@@ -125,7 +118,7 @@ class SecretEncryptionTest extends TestCase
         $envelope = base64_decode($encrypted, true);
         $nonce = substr($envelope, 1, 12);
         $mutatedNonce = substr_replace($nonce, chr(ord($nonce[0]) ^ 0xFF), 0, 1);
-        $mutated = base64_encode(chr(2) . $mutatedNonce . substr($envelope, 13));
+        $mutated = base64_encode(chr(3) . $mutatedNonce . substr($envelope, 13));
         $decrypted = decryptSmtpPassword($mutated);
 
         $this->assertNotSame($password, $decrypted, 'Tampered nonce must fail auth');
@@ -133,7 +126,7 @@ class SecretEncryptionTest extends TestCase
 
     public function testSmtpEncryptionTagMutation(): void
     {
-        putenv('APP_ENCRYPTION_KEY=' . $this->validEncryptionKey());
+        putenv('APP_SECRET=' . $this->validAppSecret());
 
         $password = 'test';
         $encrypted = encryptSmtpPassword($password);
@@ -150,11 +143,11 @@ class SecretEncryptionTest extends TestCase
 
     public function testSmtpEncryptionDifferentKeysFail(): void
     {
-        putenv('APP_ENCRYPTION_KEY=' . $this->validEncryptionKey());
+        putenv('APP_SECRET=' . $this->validAppSecret());
         $password = 'test';
         $encrypted = encryptSmtpPassword($password);
 
-        putenv('APP_ENCRYPTION_KEY=' . $this->differentEncryptionKey());
+        putenv('APP_SECRET=' . $this->differentAppSecret());
         $decrypted = decryptSmtpPassword($encrypted);
 
         $this->assertNotSame($password, $decrypted, 'Different key must not decrypt');
@@ -162,7 +155,7 @@ class SecretEncryptionTest extends TestCase
 
     public function testSmtpEncryptionMissingKeyFailsClosed(): void
     {
-        putenv('APP_ENCRYPTION_KEY');
+        putenv('APP_SECRET');
 
         $encrypted = encryptSmtpPassword('test');
         $this->assertSame('', $encrypted, 'Missing key must return empty string');
@@ -171,7 +164,7 @@ class SecretEncryptionTest extends TestCase
     public function testSmtpEncryptionInvalidKeyFormatFailsClosed(): void
     {
         // Only 63 hex chars (must be 64)
-        putenv('APP_ENCRYPTION_KEY=' . str_repeat('a', 63));
+        putenv('APP_SECRET=' . str_repeat('a', 63));
 
         $encrypted = encryptSmtpPassword('test');
         $this->assertSame('', $encrypted, 'Invalid key format must return empty string');
@@ -179,7 +172,7 @@ class SecretEncryptionTest extends TestCase
 
     public function testSmtpEncryptionEmptyPasswordEncryptsToEmpty(): void
     {
-        putenv('APP_ENCRYPTION_KEY=' . $this->validEncryptionKey());
+        putenv('APP_SECRET=' . $this->validAppSecret());
 
         $encrypted = encryptSmtpPassword('');
         $this->assertSame('', $encrypted, 'Empty password encrypts to empty');
@@ -189,7 +182,7 @@ class SecretEncryptionTest extends TestCase
 
     public function testUnsubscribeTokenRoundTrip(): void
     {
-        putenv('UNSUBSCRIBE_SECRET=' . $this->validUnsubscribeSecret());
+        putenv('APP_SECRET=' . $this->validAppSecret());
 
         $email = 'user@example.com';
         $token = generateUnsubscribeToken($email);
@@ -203,7 +196,7 @@ class SecretEncryptionTest extends TestCase
 
     public function testUnsubscribeTokenDifferentEmails(): void
     {
-        putenv('UNSUBSCRIBE_SECRET=' . $this->validUnsubscribeSecret());
+        putenv('APP_SECRET=' . $this->validAppSecret());
 
         $token1 = generateUnsubscribeToken('user1@example.com');
         $token2 = generateUnsubscribeToken('user2@example.com');
@@ -213,7 +206,7 @@ class SecretEncryptionTest extends TestCase
 
     public function testUnsubscribeTokenTamperDetection(): void
     {
-        putenv('UNSUBSCRIBE_SECRET=' . $this->validUnsubscribeSecret());
+        putenv('APP_SECRET=' . $this->validAppSecret());
 
         $email = 'user@example.com';
         $token = generateUnsubscribeToken($email);
@@ -234,7 +227,7 @@ class SecretEncryptionTest extends TestCase
 
     public function testUnsubscribeTokenRejectsLegacy(): void
     {
-        putenv('UNSUBSCRIBE_SECRET=' . $this->validUnsubscribeSecret());
+        putenv('APP_SECRET=' . $this->validAppSecret());
 
         // Legacy format: no version/purpose
         $legacyPayload = json_encode(['email' => 'user@example.com']);
@@ -246,11 +239,11 @@ class SecretEncryptionTest extends TestCase
 
     public function testUnsubscribeTokenRejectsWrongPurpose(): void
     {
-        putenv('UNSUBSCRIBE_SECRET=' . $this->validUnsubscribeSecret());
+        putenv('APP_SECRET=' . $this->validAppSecret());
 
         // v2 but wrong purpose
         $wrongPayload = json_encode(['v' => 2, 'purpose' => 'other', 'email' => 'user@example.com']);
-        $wrongSignature = hash_hmac('sha256', $wrongPayload, getenv('UNSUBSCRIBE_SECRET'));
+        $wrongSignature = hash_hmac('sha256', $wrongPayload, AppKeyDeriver::unsubscribeSigningKey());
         $token = strtr(base64_encode($wrongPayload . '|' . $wrongSignature), '+/', '-_');
 
         $validated = validateUnsubscribeToken($token);
@@ -259,7 +252,7 @@ class SecretEncryptionTest extends TestCase
 
     public function testUnsubscribeTokenRejectsDatabasePasswordSigning(): void
     {
-        putenv('UNSUBSCRIBE_SECRET=' . $this->validUnsubscribeSecret());
+        putenv('APP_SECRET=' . $this->validAppSecret());
 
         $email = 'user@example.com';
 
@@ -269,7 +262,7 @@ class SecretEncryptionTest extends TestCase
         $wrongSig = hash_hmac('sha256', $payload, $cfg['password']);
         $forgedToken = strtr(base64_encode($payload . '|' . $wrongSig), '+/', '-_');
 
-        // Real token with UNSUBSCRIBE_SECRET
+        // Real token with the derived unsubscribe signing key
         $realToken = generateUnsubscribeToken($email);
 
         // Forged must fail, real must pass
@@ -279,11 +272,11 @@ class SecretEncryptionTest extends TestCase
 
     public function testUnsubscribeTokenValidatesEmail(): void
     {
-        putenv('UNSUBSCRIBE_SECRET=' . $this->validUnsubscribeSecret());
+        putenv('APP_SECRET=' . $this->validAppSecret());
 
         // Create v2 token with invalid email
         $payload = json_encode(['v' => 2, 'purpose' => 'unsubscribe', 'email' => 'not-an-email']);
-        $sig = hash_hmac('sha256', $payload, getenv('UNSUBSCRIBE_SECRET'));
+        $sig = hash_hmac('sha256', $payload, AppKeyDeriver::unsubscribeSigningKey());
         $token = strtr(base64_encode($payload . '|' . $sig), '+/', '-_');
 
         $validated = validateUnsubscribeToken($token);
@@ -292,11 +285,11 @@ class SecretEncryptionTest extends TestCase
 
     public function testUnsubscribeTokenValidatesEmailIsString(): void
     {
-        putenv('UNSUBSCRIBE_SECRET=' . $this->validUnsubscribeSecret());
+        putenv('APP_SECRET=' . $this->validAppSecret());
 
         // Create v2 token with email as int
         $payload = json_encode(['v' => 2, 'purpose' => 'unsubscribe', 'email' => 123]);
-        $sig = hash_hmac('sha256', $payload, getenv('UNSUBSCRIBE_SECRET'));
+        $sig = hash_hmac('sha256', $payload, AppKeyDeriver::unsubscribeSigningKey());
         $token = strtr(base64_encode($payload . '|' . $sig), '+/', '-_');
 
         $validated = validateUnsubscribeToken($token);
@@ -305,18 +298,19 @@ class SecretEncryptionTest extends TestCase
 
     public function testUnsubscribeTokenMissingSecretFailsClosed(): void
     {
-        putenv('UNSUBSCRIBE_SECRET');
+        putenv('APP_SECRET');
 
         $token = generateUnsubscribeToken('user@example.com');
         $this->assertSame('', $token, 'Missing secret must return empty token');
     }
 
-    public function testUnsubscribeTokenSecretTooShortFailsClosed(): void
+    public function testUnsubscribeTokenMalformedAppSecretFailsClosed(): void
     {
-        putenv('UNSUBSCRIBE_SECRET=' . str_repeat('x', 31)); // 31 chars, need 32+
+        // A 31-character APP_SECRET is malformed; exactly 64 hexadecimal characters are required.
+        putenv('APP_SECRET=' . str_repeat('x', 31));
 
         $token = generateUnsubscribeToken('user@example.com');
-        $this->assertSame('', $token, 'Secret < 32 bytes must return empty token');
+        $this->assertSame('', $token, 'Malformed APP_SECRET must return empty token');
     }
 
     // ========== Canonical URL Tests ==========
@@ -447,20 +441,69 @@ class SecretEncryptionTest extends TestCase
 
     // ========== Helper Methods ==========
 
-    private function validEncryptionKey(): string
+    public function testAppKeyDeriverProducesDistinctDeterministicKeys(): void
     {
-        // 64 hex characters = 32 bytes
+        $secret = $this->validAppSecret();
+        $keys = [
+            AppKeyDeriver::smtpEncryptionKey($secret),
+            AppKeyDeriver::unsubscribeSigningKey($secret),
+            AppKeyDeriver::loginThrottleHmacKey($secret),
+            AppKeyDeriver::newsletterThrottleHmacKey($secret),
+        ];
+
+        self::assertSame(AppKeyDeriver::smtpEncryptionKey($secret), AppKeyDeriver::smtpEncryptionKey($secret));
+        self::assertSame([32, 32, 32, 32], array_map('strlen', $keys));
+        self::assertCount(4, array_unique(array_map('bin2hex', $keys)));
+    }
+
+    public function testAppKeyDeriverRejectsMalformedSecret(): void
+    {
+        $this->expectException(\RuntimeException::class);
+        AppKeyDeriver::smtpEncryptionKey('not-hex');
+    }
+
+    public function testAppKeyDeriverRejectsMissingSecret(): void
+    {
+        putenv('APP_SECRET');
+
+        $this->expectException(\RuntimeException::class);
+        AppKeyDeriver::smtpEncryptionKey();
+    }
+
+    public function testSmtpEncryptionUsesV3AndRejectsV2Envelope(): void
+    {
+        putenv('APP_SECRET=' . $this->validAppSecret());
+        $encrypted = encryptSmtpPassword('secret');
+        self::assertSame(3, ord(base64_decode($encrypted, true)[0]));
+
+        $nonce = random_bytes(12);
+        $tag = '';
+        $ciphertext = openssl_encrypt('secret', 'aes-256-gcm', AppKeyDeriver::smtpEncryptionKey(), OPENSSL_RAW_DATA, $nonce, $tag);
+        self::assertIsString($ciphertext);
+        self::assertSame('', decryptSmtpPassword(base64_encode(chr(2) . $nonce . $ciphertext . $tag)));
+    }
+
+    public function testUnsubscribeTokenRejectsRootByteSignature(): void
+    {
+        $secret = $this->validAppSecret();
+        putenv('APP_SECRET=' . $secret);
+        $payload = json_encode(['v' => 2, 'purpose' => 'unsubscribe', 'email' => 'user@example.com']);
+        self::assertIsString($payload);
+        $root = hex2bin($secret);
+        self::assertIsString($root);
+        $signature = hash_hmac('sha256', $payload, $root);
+        $token = strtr(base64_encode($payload . '|' . $signature), '+/', '-_');
+
+        self::assertFalse(validateUnsubscribeToken($token));
+    }
+
+    private function validAppSecret(): string
+    {
         return '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
     }
 
-    private function differentEncryptionKey(): string
+    private function differentAppSecret(): string
     {
         return 'fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210';
-    }
-
-    private function validUnsubscribeSecret(): string
-    {
-        // 32+ bytes
-        return 'my-secret-unsubscribe-key-for-32bytes-test-with-plenty-of-entropy-here';
     }
 }

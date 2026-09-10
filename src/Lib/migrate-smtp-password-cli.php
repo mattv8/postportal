@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 /**
- * CLI entrypoint for SMTP password v1→v2 migration.
+ * CLI entrypoint for SMTP password migration to v3.
  * Safely includable by both CLI and PHPUnit.
  *
  * Direct execution: php migrate-smtp-password-cli.php
@@ -14,7 +14,7 @@ use PostPortal\Lib\MigrateSmtpCiphertext;
 use PostPortal\Lib\SmtpPasswordPersistenceMysqli;
 
 /**
- * Run SMTP password v1→v2 migration CLI logic.
+ * Run SMTP password migration CLI logic.
  * Validates configuration, connects to database, and executes migration.
  * Always closes any opened connection via try/finally.
  *
@@ -44,14 +44,14 @@ function runSmtpPasswordMigrationCli(): int
             return 2;
         }
 
-        // Validate APP_ENCRYPTION_KEY: must be exactly 64 hexadecimal characters
-        $appKey = getenv('APP_ENCRYPTION_KEY');
-        if ($appKey === false || $appKey === '') {
+        // Validate APP_SECRET: must be exactly 64 hexadecimal characters
+        $appSecret = getenv('APP_SECRET');
+        if ($appSecret === false || $appSecret === '') {
             fwrite(STDERR, "Configuration error\n");
             return 1;
         }
 
-        if (!ctype_xdigit($appKey) || strlen($appKey) !== 64) {
+        if (!ctype_xdigit($appSecret) || strlen($appSecret) !== 64) {
             fwrite(STDERR, "Configuration error\n");
             return 1;
         }
@@ -79,7 +79,7 @@ function runSmtpPasswordMigrationCli(): int
 
         // Create persistence adapter and migration
         $persistence = new SmtpPasswordPersistenceMysqli($conn);
-        $migration = new MigrateSmtpCiphertext($persistence);
+        $migration = new MigrateSmtpCiphertext($persistence, $appSecret);
 
         // Run migration
         $exitCode = $migration->run();

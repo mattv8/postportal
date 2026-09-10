@@ -7,7 +7,7 @@ fail() {
     exit 1
 }
 
-required=(MYSQL_DATABASE MYSQL_USER MYSQL_PASSWORD DEFAULT_ADMIN_PASSWORD APP_ENCRYPTION_KEY UNSUBSCRIBE_SECRET APP_URL)
+required=(MYSQL_DATABASE MYSQL_USER MYSQL_PASSWORD DEFAULT_ADMIN_PASSWORD APP_SECRET APP_URL)
 for name in "${required[@]}"; do
     [ -n "${!name:-}" ] || fail "${name} is required"
 done
@@ -29,9 +29,7 @@ for name in MYSQL_PASSWORD DEFAULT_ADMIN_PASSWORD; do
     is_placeholder "$value" && fail "${name} does not meet password policy"
 done
 
-[[ "$APP_ENCRYPTION_KEY" =~ ^[[:xdigit:]]{64}$ ]] || fail 'APP_ENCRYPTION_KEY is invalid'
-[ "${#UNSUBSCRIBE_SECRET}" -ge 32 ] || fail 'UNSUBSCRIBE_SECRET is invalid'
-[ "$UNSUBSCRIBE_SECRET" != "$APP_ENCRYPTION_KEY" ] || fail 'UNSUBSCRIBE_SECRET must be independent'
+[[ "$APP_SECRET" =~ ^[[:xdigit:]]{64}$ ]] || fail 'APP_SECRET is invalid'
 
 [[ "$APP_URL" =~ ^https?:// ]] || fail 'APP_URL is invalid'
 [[ "$APP_URL" != *$'\n'* && "$APP_URL" != *$'\r'* && "$APP_URL" != *$'\t'* && "$APP_URL" != *'?'* && "$APP_URL" != *'#'* && "$APP_URL" != *' '* ]] || fail 'APP_URL is invalid'

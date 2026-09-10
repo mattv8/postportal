@@ -1,10 +1,10 @@
 -- Migration 22: Add authentication security tables (SEC-09, SEC-10, SEC-11)
 -- Idempotent migration for session rotation, login throttling, and account activation
 
--- Table for tracking login attempts by source (server-side throttling)
+-- Table for tracking login attempts by source using the derived login-throttle key (server-side throttling)
 -- SEC-10: Two independent scopes - track source and username separately
--- source_hmac: HMAC-SHA-256(APP_ENCRYPTION_KEY || source_ip) prevents IP enumeration
--- username_hmac: HMAC-SHA-256(APP_ENCRYPTION_KEY || normalize(username)) prevents username enumeration
+-- source_hmac: HMAC-SHA-256(derived login-throttle key, source_ip) prevents IP enumeration
+-- username_hmac: HMAC-SHA-256(derived login-throttle key, normalize(username)) prevents username enumeration
 -- Each scope is independent: rotating usernames from one IP throttles that IP; same user from many IPs throttles that user
 
 -- Drop old composite table if exists (migration from previous schema)

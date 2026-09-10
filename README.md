@@ -33,11 +33,8 @@ A flexible post and update platform built on PHP with Smarty templates, featurin
    # Required only for the first database initialization; at least 16 characters.
    DEFAULT_ADMIN_PASSWORD=
 
-   # Required application secrets. Generate independently, for example:
-   # APP_ENCRYPTION_KEY: openssl rand -hex 32
-   # UNSUBSCRIBE_SECRET: openssl rand -base64 48
-   APP_ENCRYPTION_KEY=
-   UNSUBSCRIBE_SECRET=
+   # Required application secret. Generate it with: openssl rand -hex 32
+   APP_SECRET=
 
    # Required canonical public URL (absolute http/https; no credentials, query, or fragment).
    APP_URL=
@@ -158,6 +155,13 @@ docker compose up -d
 ```
 > 💡 **Tip:** [Create a backup](#gui-backup--restore) first.
 
+### Application Secret Setup
+
+- **New installations:** Generate `APP_SECRET` with `openssl rand -hex 32`.
+- **Upgrades from `APP_ENCRYPTION_KEY`:** Do **not** generate a new value. Copy the unchanged old `APP_ENCRYPTION_KEY` value to `APP_SECRET` so startup can migrate v2 SMTP ciphertext.
+
+Existing unsubscribe links become invalid after this upgrade.
+
 #### If a Database Migration Fails
 
 In rare cases, a migration may fail due to schema drift (e.g., manual database changes or a previously interrupted migration). If this happens, you can reset the migration tracking and reapply:
@@ -179,6 +183,10 @@ Note: MySQL root password is auto-generated for security.
 
 ### Admin Configuration
 - `DEFAULT_ADMIN_PASSWORD` - Initial admin user password (required for first setup)
+
+### Application Configuration
+- `APP_SECRET` - Required 64-character hexadecimal application secret. New installations generate it with `openssl rand -hex 32`; upgrades retain the unchanged old `APP_ENCRYPTION_KEY` value instead.
+- `APP_URL` - Required canonical public URL. It cannot be safely derived server-side because reverse proxies can obscure the original public scheme and host.
 
 ### Debug Settings
 - `DEBUG` - Enable debug mode (default: `false`)

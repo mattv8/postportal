@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace PostPortal\Tests\Security;
 
 use PostPortal\Repository\NewsletterThrottleRepository;
+use PostPortal\Security\HmacPrivacyKey;
 use PHPUnit\Framework\TestCase;
 
 require_once __DIR__ . '/../../vendor/autoload.php';
@@ -15,7 +16,7 @@ final class NewsletterDoubleOptInTest extends TestCase
     private \mysqli $db;
     /** @var list<string> */
     private array $sourceKeys = [];
-    private string|false $originalAppKey;
+    private string|false $originalAppSecret;
 
     protected function setUp(): void
     {
@@ -24,8 +25,8 @@ final class NewsletterDoubleOptInTest extends TestCase
             throw new \RuntimeException('Newsletter throttle tests require the configured MySQL environment.');
         }
         $this->db = $db;
-        $this->originalAppKey = getenv('APP_ENCRYPTION_KEY');
-        putenv('APP_ENCRYPTION_KEY=' . bin2hex(random_bytes(32)));
+        $this->originalAppSecret = getenv('APP_SECRET');
+        putenv('APP_SECRET=' . bin2hex(random_bytes(32)));
     }
 
     protected function tearDown(): void
@@ -37,10 +38,10 @@ final class NewsletterDoubleOptInTest extends TestCase
                 $statement->execute();
             }
         }
-        if ($this->originalAppKey === false) {
-            putenv('APP_ENCRYPTION_KEY');
+        if ($this->originalAppSecret === false) {
+            putenv('APP_SECRET');
         } else {
-            putenv('APP_ENCRYPTION_KEY=' . $this->originalAppKey);
+            putenv('APP_SECRET=' . $this->originalAppSecret);
         }
         $this->db->close();
     }
@@ -81,18 +82,18 @@ final class NewsletterDoubleOptInTest extends TestCase
 
     public function testMissingOrInvalidApplicationKeyFailsClosed(): void
     {
-        putenv('APP_ENCRYPTION_KEY');
+        putenv('APP_SECRET');
         try {
             NewsletterThrottleRepository::deriveSourceKey('198.51.100.12');
-            self::fail('Missing APP_ENCRYPTION_KEY must fail closed.');
+            self::fail('Missing APP_SECRET must fail closed.');
         } catch (\RuntimeException) {
             self::addToAssertionCount(1);
         }
 
-        putenv('APP_ENCRYPTION_KEY=not-a-64-hex-key');
+        putenv('APP_SECRET=not-a-64-hex-key');
         try {
             NewsletterThrottleRepository::deriveSourceKey('198.51.100.13');
-            self::fail('An invalid APP_ENCRYPTION_KEY must fail closed.');
+            self::fail('An invalid APP_SECRET must fail closed.');
         } catch (\RuntimeException) {
             self::addToAssertionCount(1);
         }
@@ -106,10 +107,12 @@ final class NewsletterDoubleOptInTest extends TestCase
         self::assertMatchesRegularExpression('/\A[a-f0-9]{64}\z/', $sourceKey);
         self::assertStringNotContainsString($ip, $sourceKey);
         self::assertNotSame(
-            hash_hmac('sha256', $ip, hex2bin((string) getenv('APP_ENCRYPTION_KEY'))),
+            hash_hmac('sha256', $ip, hex2bin((string) getenv('APP_SECRET'))),
             $sourceKey,
-            'The purpose prefix must isolate throttle HMACs from other APP_ENCRYPTION_KEY uses.'
+            'The derived key must isolate throttle HMACs from direct APP_SECRET uses.'
         );
+        self::assertSame($sourceKey, NewsletterThrottleRepository::deriveSourceKey($ip));
+        self::assertNotSame(bin2hex(HmacPrivacyKey::generateThrottleKey($ip)), $sourceKey);
     }
 
     private function sourceKey(string $ip): string

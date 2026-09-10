@@ -16,7 +16,7 @@ class SharedSmtpSecurityTest extends TestCase
 {
     protected static ?\mysqli $db = null;
     protected string|false $originalAppUrl = false;
-    protected string|false $originalEncryptionKey = false;
+    protected string|false $originalAppSecret = false;
 
     protected function setUp(): void
     {
@@ -28,8 +28,8 @@ class SharedSmtpSecurityTest extends TestCase
         // Save original APP_URL (preserve exact state: false if unset, string if set)
         $this->originalAppUrl = getenv('APP_URL');
 
-        // Save original APP_ENCRYPTION_KEY if used by tests
-        $this->originalEncryptionKey = getenv('APP_ENCRYPTION_KEY');
+        // Save original APP_SECRET if used by tests
+        $this->originalAppSecret = getenv('APP_SECRET');
     }
 
     protected function tearDown(): void
@@ -41,11 +41,11 @@ class SharedSmtpSecurityTest extends TestCase
             putenv('APP_URL=' . $this->originalAppUrl);
         }
 
-        // Restore APP_ENCRYPTION_KEY if it was saved
-        if ($this->originalEncryptionKey === false) {
-            putenv('APP_ENCRYPTION_KEY');
+        // Restore APP_SECRET if it was saved
+        if ($this->originalAppSecret === false) {
+            putenv('APP_SECRET');
         } else {
-            putenv('APP_ENCRYPTION_KEY=' . $this->originalEncryptionKey);
+            putenv('APP_SECRET=' . $this->originalAppSecret);
         }
     }
 
@@ -287,7 +287,7 @@ class SharedSmtpSecurityTest extends TestCase
     private function updateSettingsForTest(\mysqli $db, array $values): void
     {
         if (!empty($values['smtp_password'])) {
-            putenv('APP_ENCRYPTION_KEY=' . str_repeat('a1', 32));
+            putenv('APP_SECRET=' . str_repeat('a1', 32));
             $values['smtp_password'] = encryptSmtpPassword((string)$values['smtp_password']);
         }
 

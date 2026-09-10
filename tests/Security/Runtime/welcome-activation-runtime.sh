@@ -33,7 +33,7 @@ docker volume create "$volume" >/dev/null
 docker run -d --name "$name" \
     -e MYSQL_DATABASE=postportal -e MYSQL_USER=postportal -e MYSQL_PASSWORD="$db_password" \
     -e DEFAULT_ADMIN_PASSWORD="$admin_password" \
-    -e APP_ENCRYPTION_KEY="$(openssl rand -hex 32)" -e UNSUBSCRIBE_SECRET="$(openssl rand -hex 32)" \
+    -e APP_SECRET="$(openssl rand -hex 32)" \
     -e APP_URL=http://127.0.0.1 -v "$volume:/var/lib/mysql" \
     -v "$scratch:/welcome-test" -v "$repo_root/tests/Security/fixtures/smtp_fixture.py:/welcome-test/smtp_fixture.py:ro" \
     -v "$scratch/config.php:/var/www/html/config.php:ro" \

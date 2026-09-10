@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace PostPortal\Repository;
 
+use PostPortal\Security\AppKeyDeriver;
+
 final class NewsletterThrottleRepository extends BaseRepository implements NewsletterThrottleRepositoryInterface
 {
     /**
@@ -104,16 +106,10 @@ final class NewsletterThrottleRepository extends BaseRepository implements Newsl
      */
     public static function deriveSourceKey(string $ipAddress): string
     {
-        $keyHex = getenv('APP_ENCRYPTION_KEY');
-        if (!is_string($keyHex) || !preg_match('/\A[0-9a-fA-F]{64}\z/', $keyHex)) {
-            throw new \RuntimeException('Newsletter throttling key is not configured');
-        }
-
-        $key = hex2bin($keyHex);
-        if ($key === false) {
-            throw new \RuntimeException('Newsletter throttling key is invalid');
-        }
-
-        return hash_hmac('sha256', "newsletter-throttle-source\0" . $ipAddress, $key);
+        return hash_hmac(
+            'sha256',
+            "newsletter-throttle-source\0" . $ipAddress,
+            AppKeyDeriver::newsletterThrottleHmacKey()
+        );
     }
 }

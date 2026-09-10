@@ -11,9 +11,11 @@ if (!class_exists('Composer\\Autoload\\ClassLoader', false)) {
 }
 require_once(__DIR__ . '/lib/MediaProcessor.php');
 require_once(__DIR__ . '/Http/ViewRenderer.php');
+require_once(__DIR__ . '/Security/AppKeyDeriver.php');
 
 use PostPortal\Http\ViewRenderer;
 use PostPortal\Lib\MediaProcessor;
+use PostPortal\Security\AppKeyDeriver;
 
 // Default AI system prompt for title generation
 define('DEFAULT_AI_SYSTEM_PROMPT', 'You are a helpful assistant that creates concise, engaging titles for update posts. The title should be short (3-8 words), and capture the essence of the update. Return ONLY the title text, nothing else.');
@@ -1170,40 +1172,26 @@ function getFaviconUrls(\mysqli $db_conn, string|int|null $favicon_media_id = nu
 }
 
 /**
- * Encrypt SMTP password using AES-256-CBC
- *
- * @param string $password Plain text password to encrypt
- * @return string Encrypted password (base64 encoded with IV) or empty string
- */
-/**
- * Decrypt and validate APP_ENCRYPTION_KEY from environment.
- * Must be exactly 64 hexadecimal characters (32 bytes when decoded).
+ * Derive the SMTP encryption key from APP_SECRET.
  *
  * @return string 32 raw bytes, or empty string if missing/invalid
  */
 function getAppEncryptionKeyBytes(): string
 {
-    $keyHex = getenv('APP_ENCRYPTION_KEY');
-    if ($keyHex === false || $keyHex === '') {
+    try {
+        return AppKeyDeriver::smtpEncryptionKey();
+    } catch (\RuntimeException $e) {
+        error_log('getAppEncryptionKeyBytes: ' . $e->getMessage());
         return '';
     }
-
-    // Must be exactly 64 hex characters
-    if (!ctype_xdigit($keyHex) || strlen($keyHex) !== 64) {
-        error_log('getAppEncryptionKeyBytes: APP_ENCRYPTION_KEY must be exactly 64 hexadecimal characters');
-        return '';
-    }
-
-    return hex2bin($keyHex);
 }
 
 /**
- * Encrypt SMTP password using v2 AES-256-GCM envelope.
- * Requires independent APP_ENCRYPTION_KEY (64 hex chars = 32 bytes).
+ * Encrypt SMTP password using v3 AES-256-GCM envelope.
  * Uses random 12-byte nonce and 16-byte authentication tag.
  *
  * @param string $password SMTP password to encrypt
- * @return string Base64-encoded v2 envelope or empty string on failure
+ * @return string Base64-encoded v3 envelope or empty string on failure
  */
 function encryptSmtpPassword(string $password): string
 {
@@ -1213,11 +1201,11 @@ function encryptSmtpPassword(string $password): string
 
     $appKey = getAppEncryptionKeyBytes();
     if ($appKey === '') {
-        error_log('encryptSmtpPassword: Missing or invalid APP_ENCRYPTION_KEY');
+        error_log('encryptSmtpPassword: Missing or invalid APP_SECRET');
         return '';
     }
 
-    // v2 format: 1 byte version + 12 bytes nonce + ciphertext + 16 bytes auth tag
+    // v3 format: 1 byte version + 12 bytes nonce + ciphertext + 16 bytes auth tag
     try {
         $nonce = random_bytes(12);
     } catch (Throwable $e) {
@@ -1240,16 +1228,16 @@ function encryptSmtpPassword(string $password): string
         return '';
     }
 
-    // v2 envelope: version (1) + nonce (12) + ciphertext + tag (16)
-    $envelope = chr(2) . $nonce . $encrypted . $tag;
+    // v3 envelope: version (1) + nonce (12) + ciphertext + tag (16)
+    $envelope = chr(3) . $nonce . $encrypted . $tag;
     return base64_encode($envelope);
 }
 
 /**
- * Decrypt SMTP password using v2 AES-256-GCM envelope.
+ * Decrypt SMTP password using v3 AES-256-GCM envelope.
  * Rejects legacy formats and malformed envelopes.
  *
- * @param string $encryptedPassword Base64-encoded v2 envelope
+ * @param string $encryptedPassword Base64-encoded v3 envelope
  * @return string Decrypted password or empty string on failure
  */
 function decryptSmtpPassword(string $encryptedPassword): string
@@ -1261,7 +1249,7 @@ function decryptSmtpPassword(string $encryptedPassword): string
     try {
         $appKey = getAppEncryptionKeyBytes();
         if ($appKey === '') {
-            error_log('decryptSmtpPassword: Missing or invalid APP_ENCRYPTION_KEY');
+            error_log('decryptSmtpPassword: Missing or invalid APP_SECRET');
             return '';
         }
 
@@ -1271,10 +1259,10 @@ function decryptSmtpPassword(string $encryptedPassword): string
             return '';
         }
 
-        // Parse v2 envelope: version (1) + nonce (12) + ciphertext + tag (16)
+        // Parse v3 envelope: version (1) + nonce (12) + ciphertext + tag (16)
         $version = ord($envelope[0]);
-        if ($version !== 2) {
-            error_log('decryptSmtpPassword: Invalid envelope version - only v2 accepted');
+        if ($version !== 3) {
+            error_log('decryptSmtpPassword: Invalid envelope version - only v3 accepted');
             return '';
         }
 
@@ -1413,29 +1401,23 @@ function getTotalSubscriberCount(\mysqli $db_conn): int
 }
 
 /**
- * Get UNSUBSCRIBE_SECRET from environment.
- * Must be at least 32 bytes/characters.
+ * Derive the unsubscribe signing key from APP_SECRET.
  *
  * @return string The secret, or empty string if missing/too short
  */
 function getUnsubscribeSecret(): string
 {
-    $secret = getenv('UNSUBSCRIBE_SECRET');
-    if ($secret === false || $secret === '') {
+    try {
+        return AppKeyDeriver::unsubscribeSigningKey();
+    } catch (\RuntimeException $e) {
+        error_log('getUnsubscribeSecret: ' . $e->getMessage());
         return '';
     }
-
-    if (strlen($secret) < 32) {
-        error_log('getUnsubscribeSecret: UNSUBSCRIBE_SECRET must be at least 32 bytes');
-        return '';
-    }
-
-    return $secret;
 }
 
 /**
  * Generate a v2 unsubscribe token for an email address.
- * Requires independent UNSUBSCRIBE_SECRET (at least 32 bytes).
+ * Requires a valid APP_SECRET-derived signing key.
  * Uses constant-time HMAC-SHA256 with purpose binding.
  *
  * @param string $email The email address to generate a token for
@@ -1445,7 +1427,7 @@ function generateUnsubscribeToken(string $email): string
 {
     $secret = getUnsubscribeSecret();
     if ($secret === '') {
-        error_log('generateUnsubscribeToken: Missing or invalid UNSUBSCRIBE_SECRET');
+        error_log('generateUnsubscribeToken: Missing or invalid APP_SECRET');
         return '';
     }
 
@@ -1469,7 +1451,7 @@ function generateUnsubscribeToken(string $email): string
 /**
  * Validate and decode a v2 unsubscribe token.
  * Rejects legacy formats, wrong purpose, and all tampering.
- * Requires independent UNSUBSCRIBE_SECRET (at least 32 bytes).
+ * Requires a valid APP_SECRET-derived signing key.
  *
  * @param string $token The token to validate
  * @return string|false Email address if valid, false otherwise
@@ -1479,7 +1461,7 @@ function validateUnsubscribeToken(string $token): string|false
     try {
         $secret = getUnsubscribeSecret();
         if ($secret === '') {
-            error_log('validateUnsubscribeToken: Missing or invalid UNSUBSCRIBE_SECRET');
+            error_log('validateUnsubscribeToken: Missing or invalid APP_SECRET');
             return false;
         }
 

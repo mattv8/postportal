@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use PHPUnit\Framework\TestCase;
+use PostPortal\Repository\NewsletterThrottleRepository;
 use PostPortal\Repository\UserRepository;
 use PostPortal\Security\HmacPrivacyKey;
 use PostPortal\Service\UserService;
@@ -36,7 +37,7 @@ final class AuthSecurityTest extends TestCase
     {
         self::$runId = 't2_' . bin2hex(random_bytes(4));
         self::$appKey = bin2hex(random_bytes(32));
-        putenv('APP_ENCRYPTION_KEY=' . self::$appKey);
+        putenv('APP_SECRET=' . self::$appKey);
         self::$db = self::database();
         self::bootIsolatedApplication();
     }
@@ -180,8 +181,8 @@ final class AuthSecurityTest extends TestCase
 
     public function testMissingEncryptionKeyFailsClosedForThrottleCheck(): void
     {
-        $originalKey = getenv('APP_ENCRYPTION_KEY');
-        putenv('APP_ENCRYPTION_KEY');
+        $originalKey = getenv('APP_SECRET');
+        putenv('APP_SECRET');
 
         try {
             $result = (new UserRepository(self::$db))->checkLoginThrottle('source-' . bin2hex(random_bytes(4)), 'username-' . bin2hex(random_bytes(4)));
@@ -189,11 +190,34 @@ final class AuthSecurityTest extends TestCase
             self::assertSame(60, $result['retry_after']);
         } finally {
             if ($originalKey === false) {
-                putenv('APP_ENCRYPTION_KEY');
+                putenv('APP_SECRET');
             } else {
-                putenv('APP_ENCRYPTION_KEY=' . $originalKey);
+                putenv('APP_SECRET=' . $originalKey);
             }
         }
+    }
+
+    public function testThrottleKeysArePurposeSeparatedAndDoNotContainInput(): void
+    {
+        $input = '198.51.100.14';
+        $loginKey = HmacPrivacyKey::generateThrottleKey($input);
+        $newsletterKey = NewsletterThrottleRepository::deriveSourceKey($input);
+
+        self::assertSame($loginKey, HmacPrivacyKey::generateThrottleKey($input));
+        self::assertSame($newsletterKey, NewsletterThrottleRepository::deriveSourceKey($input));
+        self::assertSame(32, strlen($loginKey));
+        self::assertMatchesRegularExpression('/\A[a-f0-9]{64}\z/', $newsletterKey);
+        self::assertStringNotContainsString($input, $loginKey);
+        self::assertStringNotContainsString($input, $newsletterKey);
+        self::assertNotSame(
+            hash_hmac('sha256', $input, hex2bin((string) getenv('APP_SECRET')), true),
+            $loginKey
+        );
+        self::assertNotSame(
+            hash_hmac('sha256', $input, hex2bin((string) getenv('APP_SECRET'))),
+            $newsletterKey
+        );
+        self::assertNotSame(bin2hex($loginKey), $newsletterKey);
     }
 
     private static string $lastToken = '';
@@ -214,7 +238,7 @@ final class AuthSecurityTest extends TestCase
         }
         mkdir(self::$sessions, 0700, true);
         $log = self::$copy . '/server.log';
-        $env = 'APP_ENCRYPTION_KEY=' . escapeshellarg(self::$appKey) . ' PHP_CLI_SERVER_WORKERS=4';
+        $env = 'APP_SECRET=' . escapeshellarg(self::$appKey) . ' PHP_CLI_SERVER_WORKERS=4';
         $command = 'setsid sh -c ' . escapeshellarg($env . ' MYSQL_HOST=' . escapeshellarg((string) getenv('MYSQL_HOST')) . ' MYSQL_DATABASE=' . escapeshellarg((string) getenv('MYSQL_DATABASE')) . ' MYSQL_USER=' . escapeshellarg((string) getenv('MYSQL_USER')) . ' MYSQL_PASSWORD=' . escapeshellarg((string) getenv('MYSQL_PASSWORD')) . ' exec php -d session.save_path=' . escapeshellarg(self::$sessions) . ' -S 127.0.0.1:' . self::$port . ' -t ' . escapeshellarg(self::$copy . '/src') . ' > ' . escapeshellarg($log) . ' 2>&1') . ' & echo $!';
         self::$serverPid = (int) trim(self::executeCommand($command));
         for ($i = 0; $i < 30; $i++) {

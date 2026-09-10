@@ -16,8 +16,7 @@ run_validator() {
     env -i PATH="$PATH" HOME="${HOME:-/tmp}" \
         MYSQL_DATABASE=postportal MYSQL_USER=postportal MYSQL_PASSWORD="$secret" \
         DEFAULT_ADMIN_PASSWORD="$secret" \
-        APP_ENCRYPTION_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
-        UNSUBSCRIBE_SECRET=abcdefghijklmnopqrstuvwxyz0123456789ABCDEF \
+        APP_SECRET=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
         APP_URL=https://portal.example.test \
         MYSQL_BIND_ADDRESS=127.0.0.1 \
         "$@" "$validator"
@@ -38,8 +37,8 @@ assert_rejected_without_secret() {
 run_validator >/dev/null || fail 'strong punctuation-rich configuration was rejected'
 assert_rejected_without_secret MYSQL_PASSWORD=
 assert_rejected_without_secret DEFAULT_ADMIN_PASSWORD=changeme_admin
-assert_rejected_without_secret APP_ENCRYPTION_KEY=not-a-key
-assert_rejected_without_secret UNSUBSCRIBE_SECRET=short
+assert_rejected_without_secret APP_SECRET=
+assert_rejected_without_secret APP_SECRET=not-a-secret
 assert_rejected_without_secret APP_URL='https://user:pass@portal.example.test/'
 assert_rejected_without_secret APP_URL='https://portal.example.test/?query=value'
 assert_rejected_without_secret MYSQL_BIND_ADDRESS=192.168.1.5
@@ -73,8 +72,7 @@ start() {
     docker run -d --name "$name" \
         -e MYSQL_DATABASE=postportal -e MYSQL_USER=postportal \
         -e MYSQL_PASSWORD="$secret" -e DEFAULT_ADMIN_PASSWORD="$1" \
-        -e APP_ENCRYPTION_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
-        -e UNSUBSCRIBE_SECRET=abcdefghijklmnopqrstuvwxyz0123456789ABCDEF \
+        -e APP_SECRET=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
         -e APP_URL=https://portal.example.test \
         -v "$volume:/var/lib/mysql" \
         "$POSTPORTAL_TEST_IMAGE" >/dev/null
@@ -107,8 +105,8 @@ docker rm -f "$name" >/dev/null
 docker run --rm \
     -e MYSQL_DATABASE=postportal -e MYSQL_USER=postportal -e MYSQL_PASSWORD="$secret" \
     -e DEFAULT_ADMIN_PASSWORD="$changed_secret" \
-    -e APP_ENCRYPTION_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
-    -e UNSUBSCRIBE_SECRET=abcdefghijklmnopqrstuvwxyz0123456789ABCDEF -e APP_URL=https://portal.example.test \
+    -e APP_SECRET=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
+    -e APP_URL=https://portal.example.test \
     -v "$volume:/var/lib/mysql" \
     -v "$work_dir/migration-failure:/docker-scripts/run-migrations.sh:ro" \
     "$POSTPORTAL_TEST_IMAGE" >/dev/null 2>&1 && fail 'migration failure started supervisord'
@@ -117,8 +115,8 @@ docker run --rm \
 docker run --rm \
     -e MYSQL_DATABASE=postportal -e MYSQL_USER=postportal -e MYSQL_PASSWORD="$secret" \
     -e DEFAULT_ADMIN_PASSWORD="$changed_secret" \
-    -e APP_ENCRYPTION_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
-    -e UNSUBSCRIBE_SECRET=abcdefghijklmnopqrstuvwxyz0123456789ABCDEF -e APP_URL=https://portal.example.test \
+    -e APP_SECRET=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
+    -e APP_URL=https://portal.example.test \
     -v "$volume:/var/lib/mysql" \
     -v "$work_dir/smtp-failure.php:/var/www/html/Lib/migrate-smtp-password-cli.php:ro" \
     "$POSTPORTAL_TEST_IMAGE" >/dev/null 2>&1 && fail 'SMTP migration failure started supervisord'
