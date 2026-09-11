@@ -39,7 +39,9 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     dos2unix \
     && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && rm -rf /var/lib/mysql \
+    && install -d -m 700 -o mysql -g mysql /var/lib/mysql
 
 # Install Composer
 COPY --from=composer:latest /usr/bin/composer /usr/bin/composer

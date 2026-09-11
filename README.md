@@ -155,14 +155,26 @@ docker compose up -d
 ```
 > 💡 **Tip:** [Create a backup](#gui-backup--restore) first.
 
+If MariaDB system tables exist but Post Portal initialization is incomplete, startup fails closed. Use a new empty volume, restoring a backup into it when existing data must be recovered, rather than expecting automatic repair.
+
 ### Application Secret Setup
 
 - **New installations:** Generate `APP_SECRET` with `openssl rand -hex 32`.
 - **Upgrades from `APP_ENCRYPTION_KEY`:** Do **not** generate a new value. Copy the unchanged old `APP_ENCRYPTION_KEY` value to `APP_SECRET` so startup can migrate v2 SMTP ciphertext.
 
+After the first hardened start, treat `APP_SECRET` as persistent key material; do not change it without a corresponding encrypted-data migration.
+
 Existing unsubscribe links become invalid after this upgrade.
 
-#### If a Database Migration Fails
+### Upgrading Existing Database Credentials
+
+When upgrading a database volume created before password-policy enforcement, keep its existing `MYSQL_USER` and `MYSQL_PASSWORD` values for the first upgraded start. Existing non-empty credentials are accepted for compatibility only when they authenticate the persisted database; new databases still require passwords of at least 16 characters.
+
+Changing `MYSQL_USER` or `MYSQL_PASSWORD` in `.env` does not change the MariaDB account. Rotate the database credential through an authenticated MariaDB session first, then update `.env` and recreate the container. A legacy application account can generally change its own password, but does not have the account-management privileges needed to change `MYSQL_USER`. Hardened installations retain the generated root credential in `/var/lib/mysql/.postportal_mysql_root_password`; older installations generally do not.
+
+Keep `DEFAULT_ADMIN_PASSWORD` non-empty, but an existing-volume restart does not write it back to the database or reset the administrator password.
+
+### If a Database Migration Fails
 
 In rare cases, a migration may fail due to schema drift (e.g., manual database changes or a previously interrupted migration). If this happens, you can reset the migration tracking and reapply:
 

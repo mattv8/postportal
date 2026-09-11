@@ -26,6 +26,11 @@ if mysql_app -e 'SELECT 1' >/dev/null 2>&1; then
     exit 0
 fi
 
+if [ "$POSTPORTAL_DATABASE_FRESH" != true ]; then
+    echo 'ERROR: Existing database is not accessible with MYSQL_USER credentials' >&2
+    exit 1
+fi
+
 if ! mysql --protocol=socket -u root -Nse "SHOW DATABASES LIKE '${DB_NAME}'" >/tmp/postportal_database_exists 2>/dev/null; then
     echo 'ERROR: Existing database is not accessible with MYSQL_USER credentials' >&2
     exit 1

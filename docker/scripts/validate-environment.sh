@@ -12,6 +12,11 @@ for name in "${required[@]}"; do
     [ -n "${!name:-}" ] || fail "${name} is required"
 done
 
+case "${POSTPORTAL_DATABASE_FRESH:-}" in
+    true|false) ;;
+    *) fail 'POSTPORTAL_DATABASE_FRESH is invalid' ;;
+esac
+
 for name in MYSQL_DATABASE MYSQL_USER; do
     [[ "${!name}" =~ ^[A-Za-z_][A-Za-z0-9_]{0,63}$ ]] || fail "${name} is invalid"
 done
@@ -23,10 +28,18 @@ is_placeholder() {
     esac
 }
 
+meets_password_policy() {
+    [ "${#1}" -ge 16 ] && ! is_placeholder "$1"
+}
+
 for name in MYSQL_PASSWORD DEFAULT_ADMIN_PASSWORD; do
     value="${!name}"
-    [ "${#value}" -ge 16 ] || fail "${name} does not meet password policy"
-    is_placeholder "$value" && fail "${name} does not meet password policy"
+    if ! meets_password_policy "$value"; then
+        if [ "$POSTPORTAL_DATABASE_FRESH" = true ]; then
+            fail "${name} does not meet password policy"
+        fi
+        printf 'WARNING: %s does not meet current password policy; continuing for existing database\n' "$name" >&2
+    fi
 done
 
 [[ "$APP_SECRET" =~ ^[[:xdigit:]]{64}$ ]] || fail 'APP_SECRET is invalid'

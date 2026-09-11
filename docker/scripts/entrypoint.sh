@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+POSTPORTAL_DATABASE_FRESH=false
+if [ ! -d /var/lib/mysql/mysql ]; then
+    POSTPORTAL_DATABASE_FRESH=true
+fi
+export POSTPORTAL_DATABASE_FRESH
+
 echo '==> Starting Post Portal Container'
 /docker-scripts/validate-environment.sh
 
@@ -29,10 +35,6 @@ printf '[mysqld]\nbind-address = %s\n' "$MYSQL_BIND_ADDRESS" > /etc/mysql/mariad
 root_password_file=/var/lib/mysql/.postportal_mysql_root_password
 runtime_root_password_file=/var/run/mysql_root_password
 rm -f "$runtime_root_password_file"
-POSTPORTAL_DATABASE_FRESH=false
-if [ ! -d /var/lib/mysql/mysql ]; then
-    POSTPORTAL_DATABASE_FRESH=true
-fi
 if [ -f "$root_password_file" ]; then
     root_password="$(<"$root_password_file")"
 elif [ -n "${MYSQL_ROOT_PASSWORD:-}" ]; then
@@ -46,7 +48,6 @@ if [ -n "$root_password" ]; then
     chmod 600 "$runtime_root_password_file"
     export MYSQL_ROOT_PASSWORD="$root_password"
 fi
-export POSTPORTAL_DATABASE_FRESH
 
 if [ "$POSTPORTAL_DATABASE_FRESH" = true ]; then
     echo '==> Initializing MariaDB data directory'
