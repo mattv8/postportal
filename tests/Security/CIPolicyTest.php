@@ -6,296 +6,184 @@ use PHPUnit\Framework\TestCase;
 
 class CIPolicyTest extends TestCase
 {
-    /**
-     * Test that all external actions in all workflows use exactly 40-character hex SHAs.
-     * Scans .github/workflows and .github/actions directories.
-     * Local actions (uses: ./) and Docker syntax are permitted.
-     * Each external pin must have an adjacent human-readable release comment.
-     */
-    public function testExternalActionsArePinnedBySha(): void
+    public function testExternalActionsArePinnedByShaWithReleaseComments(): void
     {
+        $paths = array_merge(
+            glob(__DIR__ . '/../../.github/workflows/*.{yml,yaml}', GLOB_BRACE),
+            glob(__DIR__ . '/../../.github/actions/*/action.{yml,yaml}', GLOB_BRACE),
+        );
+        $this->assertNotEmpty($paths, 'At least one workflow or composite action must be scanned.');
         $failures = [];
 
-        // Scan all workflows
-        $workflowDir = __DIR__ . '/../../.github/workflows';
-        $this->assertDirectoryExists($workflowDir);
+        foreach ($paths as $path) {
+            foreach (explode("\n", (string) file_get_contents($path)) as $lineNumber => $line) {
+                if (!preg_match('/uses:\s*([^\s#]+)/', $line, $matches) || str_starts_with($matches[1], './')) {
+                    continue;
+                }
 
-        $workflowFiles = glob($workflowDir . '/*.{yml,yaml}', GLOB_BRACE);
-        $this->assertNotEmpty($workflowFiles, 'No workflow files found');
-
-        foreach ($workflowFiles as $workflowPath) {
-            $failures = array_merge($failures, $this->checkYamlFile($workflowPath));
-        }
-
-        // Scan all composite actions
-        $actionsDir = __DIR__ . '/../../.github/actions';
-        if (is_dir($actionsDir)) {
-            foreach (glob($actionsDir . '/*/action.{yml,yaml}', GLOB_BRACE) as $actionPath) {
-                $failures = array_merge($failures, $this->checkYamlFile($actionPath));
+                if (!preg_match('/^[\w.-]+\/[\w.-]+@[0-9a-f]{40}$/', $matches[1]) || !preg_match('/#\s*[v\d]/', $line)) {
+                    $failures[] = basename($path) . ':' . ($lineNumber + 1) . ' is not a documented SHA pin';
+                }
             }
         }
 
-        $this->assertEmpty($failures, "Found action pinning violations:\n" . implode("\n", $failures));
+        $this->assertSame([], $failures, implode("\n", $failures));
     }
 
-    /**
-     * Check a single YAML file for action pin compliance.
-     * @return array<int, string> List of failure messages
-     */
-    private function checkYamlFile(string $filePath): array
+    public function testComposerConstraintsKeepKnownAdvisorySafetyFloors(): void
     {
-        $failures = [];
-        $yaml = file_get_contents($filePath);
-        $this->assertIsString($yaml);
+        $composer = $this->json('composer.json');
 
-        $lines = explode("\n", $yaml);
-
-        foreach ($lines as $lineNum => $line) {
-            $trimmed = trim($line);
-
-            if (empty($trimmed) || strpos($trimmed, 'uses:') === false) {
-                continue;
-            }
-
-            if (!preg_match('/uses:\s*(.+?)(?:\s*#.*)?$/', $trimmed, $matches)) {
-                continue;
-            }
-
-            $usesValue = trim($matches[1]);
-
-            // Permit local actions and Docker syntax
-            if (strpos($usesValue, './') === 0 || strpos($usesValue, 'docker://') === 0) {
-                continue;
-            }
-
-            // External action: must be owner/action@40hexsha with release comment
-            if (!preg_match('/^[a-zA-Z0-9\-_.]+\/[a-zA-Z0-9\-_.]+@[0-9a-f]{40}$/', $usesValue)) {
-                $failures[] = sprintf(
-                    "%s:%d: Invalid format (must be owner/action@40hexsha): %s",
-                    basename($filePath),
-                    $lineNum + 1,
-                    $usesValue
-                );
-                continue;
-            }
-
-            // Check for adjacent release comment
-            $hasComment = preg_match('/#\s*[v\d]/', $line);
-            if (!$hasComment && isset($lines[$lineNum + 1])) {
-                $hasComment = preg_match('/#\s*[v\d]/', $lines[$lineNum + 1]);
-            }
-
-            if (!$hasComment) {
-                $failures[] = sprintf(
-                    "%s:%d: Missing release comment for: %s",
-                    basename($filePath),
-                    $lineNum + 1,
-                    $usesValue
-                );
-            }
-        }
-
-        return $failures;
-    }
-
-    /**
-     * Test that composer.json requires minimum versions for known advisories.
-     */
-    public function testComposerConstraintsIncludeSafetyFloors(): void
-    {
-        $composerPath = __DIR__ . '/../../composer.json';
-        $this->assertFileExists($composerPath);
-
-        $composer = json_decode(file_get_contents($composerPath), associative: true);
-        $this->assertIsArray($composer);
-
-        // Verify minimum versions for known CVEs
-        $require = $composer['require'] ?? [];
-
-        // Smarty >= 5.8.4 for SEC-14 advisories
-        $this->assertArrayHasKey('smarty/smarty', $require, 'Smarty must be in require');
-        $this->assertStringContainsString(
-            '5.8.4',
-            $require['smarty/smarty'],
-            'Smarty must be >= 5.8.4 to address CVE-2026-62996, CVE-2026-62993, CVE-2026-62992'
-        );
-
-        // Guzzle PSR-7 >= 2.12.3 for SEC-14 CRLF/host confusion advisories
-        $this->assertArrayHasKey('guzzlehttp/psr7', $require, 'Guzzle PSR-7 must be in require');
-        $this->assertStringContainsString(
-            '2.12.3',
-            $require['guzzlehttp/psr7'],
-            'Guzzle PSR-7 must be >= 2.12.3'
-        );
-
-        // PHPUnit >= 10.5.62 for development (CVE-2026-24765 in >=10.0.0,<10.5.62)
-        $requireDev = $composer['require-dev'] ?? [];
-        $this->assertArrayHasKey('phpunit/phpunit', $requireDev, 'PHPUnit must be in require-dev');
-        $this->assertStringContainsString(
-            '10.5.62',
-            $requireDev['phpunit/phpunit'],
-            'PHPUnit must be >= 10.5.62 to address CVE-2026-24765'
-        );
+        $this->assertStringContainsString('5.8.4', $composer['require']['smarty/smarty']);
+        $this->assertStringContainsString('2.12.3', $composer['require']['guzzlehttp/psr7']);
+        $this->assertStringContainsString('10.5.62', $composer['require-dev']['phpunit/phpunit']);
     }
 
     public function testComposerMetadataDeclaresMitLicense(): void
     {
-        $composerPath = __DIR__ . '/../../composer.json';
-        $composer = json_decode(file_get_contents($composerPath), associative: true);
+        $composer = $this->json('composer.json');
 
-        $this->assertIsArray($composer);
         $this->assertSame('MIT', $composer['license'] ?? null);
     }
 
-    public function testComposerContainersTrustOnlyMountedRepository(): void
+    public function testReusableCiUsesOnlySafeHostedPullRequestValidation(): void
     {
-        $workflowPath = __DIR__ . '/../../.github/workflows/build-container.yml';
-        $yaml = file_get_contents($workflowPath);
+        $ci = $this->workflow('ci.yml');
 
-        $this->assertIsString($yaml);
-        $jobs = $this->parseWorkflowJobs($yaml);
-        $this->assertArrayHasKey('composer-audit', $jobs);
-
-        $composerJob = $jobs['composer-audit'];
-        $this->assertSame(2, substr_count($composerJob, '--env GIT_CONFIG_COUNT=1'));
-        $this->assertSame(2, substr_count($composerJob, '--env GIT_CONFIG_KEY_0=safe.directory'));
-        $this->assertSame(2, substr_count($composerJob, '--env GIT_CONFIG_VALUE_0=/app'));
-        $this->assertStringNotContainsString('safe.directory=*', $composerJob);
+        $this->assertStringContainsString('name: CI', $ci);
+        $this->assertStringContainsString('pull_request:', $ci);
+        $this->assertStringContainsString('workflow_call:', $ci);
+        $this->assertStringContainsString('branches: [main]', $ci);
+        $this->assertStringNotContainsString('pull_request_target:', $ci);
+        $this->assertStringNotContainsString('self-hosted', $ci);
+        $this->assertStringNotContainsString('secrets.', $ci);
+        $this->assertStringContainsString('contents: read', $ci);
+        $this->assertStringContainsString("php-version: '8.5'", $ci);
+        $this->assertStringContainsString("PHP_VERSION_ID >= 80512", $ci);
+        $this->assertStringContainsString("fail-on-diff: 'true'", $ci);
+        $this->assertStringContainsString('file: ./docker/Dockerfile.dev', $ci);
+        $this->assertStringContainsString('timeout-minutes: 60', $ci);
+        $this->assertStringContainsString('image: mariadb:10.6', $ci);
+        $this->assertStringContainsString('MIGRATION_DIR="$GITHUB_WORKSPACE/migrations" bash docker/scripts/run-migrations.sh', $ci);
+        $this->assertStringNotContainsString('CONFIG_FILE=', $ci);
+        $this->assertStringContainsString('run-migrations.sh', $ci);
+        $this->assertStringContainsString('DEFAULT_ADMIN_PASSWORD:', $ci);
+        $this->assertStringContainsString('APP_SECRET:', $ci);
+        $this->assertStringContainsString('persist-credentials: false', $ci);
+        $this->assertStringContainsString('command -v python3 openssl curl setsid', $ci);
     }
 
-    public function testSbomUsesSingleExplicitArtifactUpload(): void
+    public function testCiGateRequiresEveryMandatoryJobToSucceed(): void
     {
-        $workflowPath = __DIR__ . '/../../.github/workflows/build-container.yml';
-        $yaml = file_get_contents($workflowPath);
+        $ci = $this->workflow('ci.yml');
 
-        $this->assertIsString($yaml);
-        $jobs = $this->parseWorkflowJobs($yaml);
-        $this->assertArrayHasKey('sbom', $jobs);
+        foreach (['phpunit', 'phpstan', 'composer-audit', 'readme-consistency', 'container-runtime'] as $job) {
+            $this->assertArrayHasKey($job, $this->jobs($ci));
+        }
 
-        $sbomJob = $jobs['sbom'];
-        $this->assertStringContainsString('upload-artifact: false', $sbomJob);
-        $this->assertSame(1, substr_count($sbomJob, 'uses: actions/upload-artifact@'));
-        $this->assertStringContainsString('output-file: sbom.spdx.json', $sbomJob);
-        $this->assertStringContainsString('path: sbom.spdx.json', $sbomJob);
+        $gate = $this->jobs($ci)['gate'];
+        $this->assertStringContainsString('if: ${{ always() }}', $gate);
+        $this->assertStringContainsString('.github/scripts/ci-gate.sh', $gate);
+        $this->assertStringContainsString('NEEDS_JSON:', $gate);
+        $this->assertStringContainsString('ci-gate-test.sh', $gate);
+        $this->assertSame($this->requiredJobs(), $this->needs($gate));
     }
 
-    /**
-     * Test workflow structure: top-level jobs, permissions, DAG, and digest subject.
-     * Parses YAML line-by-line bounded by job names to avoid cross-job interference.
-     */
-    public function testWorkflowJobStructure(): void
+    public function testPublicationIsMainOnlyAndVerifiesThePushedDigest(): void
     {
-        $workflowPath = __DIR__ . '/../../.github/workflows/build-container.yml';
-        $yaml = file_get_contents($workflowPath);
-        $this->assertIsString($yaml);
+        $workflow = $this->workflow('build-container.yml');
+        $jobs = $this->jobs($workflow);
 
-        // Parse jobs into individual text blocks (bounded parser)
-        $jobs = $this->parseWorkflowJobs($yaml);
-
-        $this->assertNotEmpty($jobs, 'No jobs found in workflow');
-
-        // Required top-level jobs
-        $requiredJobs = ['phpstan', 'composer-audit', 'build-and-push', 'sign', 'sbom', 'sync-readme', 'summary'];
-        foreach ($requiredJobs as $jobName) {
-            $this->assertArrayHasKey($jobName, $jobs, "Missing required top-level job: $jobName");
-        }
-
-        // Check sync-readme is top-level (not nested under another job)
-        $this->assertArrayHasKey('sync-readme', $jobs, 'sync-readme must exist as a parsed top-level job');
-
-        // Verify read-only job permissions (bounded to each job)
-        $readOnlyJobs = ['phpstan', 'composer-audit'];
-        foreach ($readOnlyJobs as $jobName) {
-            $jobBlock = $jobs[$jobName];
-            $this->assertStringContainsString(
-                'permissions:',
-                $jobBlock,
-                "Job '$jobName' must declare permissions"
-            );
-            $this->assertMatchesRegularExpression(
-                '/^\s+permissions:\s*\n\s+contents:\s*read/m',
-                $jobBlock,
-                "Job '$jobName' permissions must be 'contents: read'"
-            );
-        }
-
-        // Verify build, sign, sbom dependency order
-        $this->assertArrayHasKey('sign', $jobs);
-        $this->assertStringContainsString(
-            'needs: [build-and-push]',
-            $jobs['sign'],
-            'sign job must depend on build-and-push'
-        );
-
-        $this->assertArrayHasKey('sbom', $jobs);
-        $this->assertStringContainsString(
-            'needs: [build-and-push]',
-            $jobs['sbom'],
-            'sbom job must depend on build-and-push'
-        );
-
-        // Verify SBOM uses exact immutable digest subject
-        $this->assertStringContainsString(
-            '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-and-push.outputs.digest }}',
-            $jobs['sbom'],
-            'SBOM image must use exact immutable digest subject (not mutable tag)'
-        );
-
-        // Summary job must depend on all critical jobs
-        $this->assertStringContainsString(
-            'needs: [build-and-push, sign, sbom, sync-readme, phpstan, composer-audit]',
-            $jobs['summary'],
-            'summary job must depend on all critical jobs in correct order'
-        );
-
-        $this->assertTrue(true, 'All workflow structure assertions passed');
+        $this->assertStringContainsString('branches: [main]', $workflow);
+        $this->assertStringContainsString('workflow_dispatch:', $workflow);
+        $this->assertStringNotContainsString('pull_request:', $workflow);
+        $this->assertStringNotContainsString('workflow_call:', $workflow);
+        $this->assertStringContainsString('group: publish-${{ github.ref }}', $workflow);
+        $this->assertStringContainsString('cancel-in-progress: false', $workflow);
+        $this->assertArrayHasKey('ci', $jobs);
+        $this->assertStringContainsString('./.github/workflows/ci.yml', $jobs['ci']);
+        $this->assertArrayHasKey('build-and-push', $jobs);
+        $this->assertStringContainsString('needs: [ci]', $jobs['build-and-push']);
+        $this->assertStringContainsString("github.ref == 'refs/heads/main'", $jobs['build-and-push']);
+        $this->assertStringContainsString('pull: true', $jobs['build-and-push']);
+        $this->assertStringContainsString('no-cache: true', $jobs['build-and-push']);
+        $this->assertStringContainsString('php-runtime-security.sh', $jobs['build-and-push']);
+        $this->assertStringContainsString(':candidate-${GITHUB_SHA}', $jobs['build-and-push']);
+        $this->assertStringNotContainsString(':main', $jobs['build-and-push']);
+        $this->assertStringNotContainsString(':latest', $jobs['build-and-push']);
+        $this->assertStringContainsString('@${{ needs.build-and-push.outputs.digest }}', $jobs['sign']);
+        $this->assertStringContainsString('needs: [build-and-push]', $jobs['sign']);
+        $this->assertStringContainsString('@${{ needs.build-and-push.outputs.digest }}', $jobs['sbom']);
+        $this->assertStringContainsString('needs: [build-and-push]', $jobs['sbom']);
+        $this->assertStringContainsString('upload-artifact: false', $jobs['sbom']);
+        $this->assertStringContainsString('uses: actions/upload-artifact@', $jobs['sbom']);
+        $this->assertArrayHasKey('promote', $jobs);
+        $this->assertStringContainsString('needs: [build-and-push, sign, sbom]', $jobs['promote']);
+        $this->assertStringContainsString('git ls-remote origin refs/heads/main', $jobs['promote']);
+        $this->assertStringContainsString('imagetools create --prefer-index=false', $jobs['promote']);
+        $this->assertStringContainsString('"$IMAGE:main"', $jobs['promote']);
+        $this->assertStringContainsString('"$IMAGE:latest"', $jobs['promote']);
+        $this->assertStringContainsString('needs: [ci, build-and-push, sign, sbom, promote]', $jobs['summary']);
+        $this->assertStringContainsString('test "$PROMOTE_RESULT" = success', $jobs['summary']);
+        $this->assertStringNotContainsString('sync-readme:', $workflow);
+        $this->assertStringNotContainsString('git commit', $workflow);
     }
 
-    /**
-     * Parse workflow YAML into per-job text blocks.
-     * Bounded parser: stops at next job definition to avoid cross-job interference.
-     *
-     * @return array<string, string> Map of job name to job YAML block
-     */
-    private function parseWorkflowJobs(string $yaml): array
+    public function testRulesetTemplatesRestrictBypassAndRequireTheObservedGate(): void
     {
-        $jobs = [];
-        $lines = explode("\n", $yaml);
-        $currentJob = null;
-        $currentJobStart = -1;
-        $inJobsSection = false;
+        $required = $this->json('.github/rulesets/main-required.json');
+        $review = $this->json('.github/rulesets/main-review.json');
 
-        foreach ($lines as $lineNum => $line) {
-            // Detect start of jobs section
-            if (preg_match('/^jobs:\s*$/', $line)) {
-                $inJobsSection = true;
-                continue;
-            }
+        $this->assertSame([], $required['bypass_actors']);
+        $this->assertSame('refs/heads/main', $required['conditions']['ref_name']['include'][0]);
+        $this->assertSame('pull_request', $required['rules'][2]['type']);
+        $this->assertSame('gate', $required['rules'][3]['parameters']['required_status_checks'][0]['context']);
+        $this->assertSame(15368, $required['rules'][3]['parameters']['required_status_checks'][0]['integration_id']);
+        $this->assertSame(1, $review['rules'][0]['parameters']['required_approving_review_count']);
+        $this->assertTrue($review['rules'][0]['parameters']['require_code_owner_review']);
+        $this->assertSame(9312603, $review['bypass_actors'][0]['actor_id']);
+        $this->assertSame('exempt', $review['bypass_actors'][0]['bypass_mode']);
+    }
 
-            if (!$inJobsSection) {
-                continue;
-            }
+    private function workflow(string $name): string
+    {
+        $contents = file_get_contents(__DIR__ . '/../../.github/workflows/' . $name);
+        $this->assertIsString($contents);
 
-            // Detect top-level job (2-space indent, ends with colon)
-            if (preg_match('/^  ([a-z\-]+):\s*$/', $line, $matches)) {
-                // Save previous job if any
-                if ($currentJob !== null && $currentJobStart >= 0) {
-                    $jobContent = implode("\n", array_slice($lines, $currentJobStart, $lineNum - $currentJobStart));
-                    $jobs[$currentJob] = $jobContent;
-                }
+        return $contents;
+    }
 
-                // Start new job
-                $currentJob = $matches[1];
-                $currentJobStart = $lineNum;
-            }
-        }
+    /** @return array<string, string> */
+    private function jobs(string $workflow): array
+    {
+        preg_match_all('/^  ([a-z-]+):\s*$(.*?)(?=^  [a-z-]+:\s*$|\z)/ms', $workflow, $matches, PREG_SET_ORDER);
 
-        // Save last job
-        if ($currentJob !== null && $currentJobStart >= 0) {
-            $jobContent = implode("\n", array_slice($lines, $currentJobStart));
-            $jobs[$currentJob] = $jobContent;
-        }
+        return array_column($matches, 2, 1);
+    }
 
-        return $jobs;
+    /** @return list<string> */
+    private function requiredJobs(): array
+    {
+        $script = (string) file_get_contents(__DIR__ . '/../../.github/scripts/ci-gate.sh');
+        preg_match('/readonly REQUIRED_JOBS=\(([^)]*)\)/', $script, $matches);
+
+        return preg_split('/\s+/', trim($matches[1] ?? ''), flags: PREG_SPLIT_NO_EMPTY) ?: [];
+    }
+
+    /** @return list<string> */
+    private function needs(string $job): array
+    {
+        preg_match('/needs:\s*\[([^]]*)\]/', $job, $matches);
+
+        return array_map('trim', explode(',', $matches[1] ?? ''));
+    }
+
+    /** @return array<string, mixed> */
+    private function json(string $path): array
+    {
+        $decoded = json_decode((string) file_get_contents(__DIR__ . '/../../' . $path), true, flags: JSON_THROW_ON_ERROR);
+        $this->assertIsArray($decoded);
+
+        return $decoded;
     }
 }

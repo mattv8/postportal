@@ -2,294 +2,155 @@ name: Build and Push Container
 
 on:
   push:
-    branches:
-      - '**'
+    branches: [main]
   workflow_dispatch:
 
 env:
   REGISTRY: hub.docker.visnovsky.us
   IMAGE_NAME: library/post-portal
 
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
-  phpstan:
-    name: Static Analysis
-    runs-on: ubuntu-latest
+  ci:
+    if: github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/ci.yml
     permissions:
       contents: read
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@d632683dd7b4114ad314bca15554477dd762a938 # v4.2.0
-
-      - name: Setup PHP
-        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
-        with:
-          php-version: '8.1'
-          extensions: mbstring, xml, gd, mysqli
-          coverage: none
-
-      - name: Install dependencies
-        run: composer install --prefer-dist --no-progress --no-suggest
-
-      - name: Run PHPStan
-        run: ./vendor/bin/phpstan analyse --error-format=github
-
-  composer-audit:
-    name: Validate Dependencies
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@d632683dd7b4114ad314bca15554477dd762a938 # v4.2.0
-
-      - name: Validate composer.json and composer.lock
-        run: |
-          docker run --rm \
-            --env GIT_CONFIG_COUNT=1 \
-            --env GIT_CONFIG_KEY_0=safe.directory \
-            --env GIT_CONFIG_VALUE_0=/app \
-            --volume "$PWD:/app:ro" \
-            --workdir /app \
-            composer:2 validate --strict
-
-      - name: Audit dependencies for security advisories
-        run: |
-          docker run --rm \
-            --env GIT_CONFIG_COUNT=1 \
-            --env GIT_CONFIG_KEY_0=safe.directory \
-            --env GIT_CONFIG_VALUE_0=/app \
-            --volume "$PWD:/app:ro" \
-            --workdir /app \
-            composer:2 audit --locked --no-interaction
 
   build-and-push:
     name: Build and Push Container Image
     runs-on: self-hosted
+    if: github.ref == 'refs/heads/main'
+    needs: [ci]
     permissions:
       contents: read
-      packages: write
     outputs:
-      branch: ${{ steps.extract_branch.outputs.branch }}
+      branch: main
       tags: ${{ steps.meta.outputs.tags }}
       digest: ${{ steps.build-and-push.outputs.digest }}
       image-name: ${{ steps.meta.outputs.image-name }}
-
     steps:
-      - name: Checkout code
-        uses: actions/checkout@d632683dd7b4114ad314bca15554477dd762a938 # v4.2.0
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@d70bba72b1f3fd22344832f00baa16ece964efeb # v3.3.0
-
-      - name: Extract branch name
-        id: extract_branch
+      - uses: actions/checkout@d632683dd7b4114ad314bca15554477dd762a938 # v4.2.0
+      - uses: docker/setup-buildx-action@d70bba72b1f3fd22344832f00baa16ece964efeb # v3.3.0
+      - id: meta
+        name: Set candidate tag
         run: |
-          BRANCH_NAME=${GITHUB_REF#refs/heads/}
-          # Replace / with - for valid docker tags
-          SAFE_BRANCH=$(echo "$BRANCH_NAME" | sed 's/\//-/g')
-          echo "branch=$SAFE_BRANCH" >> $GITHUB_OUTPUT
-          echo "Building for branch: $SAFE_BRANCH"
-
-      - name: Determine Docker tags
-        id: meta
-        run: |
-          BRANCH="${{ steps.extract_branch.outputs.branch }}"
-
-          # Default tags include the branch name
-          TAGS="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${BRANCH}"
-
-          # If this is the main branch, also tag as 'latest'
-          if [ "$BRANCH" = "main" ]; then
-            TAGS="${TAGS},${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
-          fi
-
-          echo "tags=${TAGS}" >> $GITHUB_OUTPUT
-          echo "image-name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${BRANCH}" >> $GITHUB_OUTPUT
-          echo "Tags to be pushed: ${TAGS}"
-
-      - name: Log in to Harbor Registry
-        uses: docker/login-action@0d4c9c5ea7693da7b068278f7b52bda2a190a446 # v3.2.0
+          echo "tags=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:candidate-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          echo "image-name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:candidate-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+      - uses: docker/login-action@0d4c9c5ea7693da7b068278f7b52bda2a190a446 # v3.2.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ secrets.HARBOR_USERNAME }}
           password: ${{ secrets.HARBOR_PASSWORD }}
-
-      - name: Build and push Docker image
-        id: build-and-push
+      - id: build-and-push
+        name: Build and push Docker image
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5.4.0
         with:
           context: .
           file: ./docker/Dockerfile
           push: true
+          pull: true
+          no-cache: true
           tags: ${{ steps.meta.outputs.tags }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Cleanup old Docker images
-        uses: ./.github/actions/cleanup
-        with:
-          repositories: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          # Match all tags, but exclude 'latest' from deletion
-          tagPattern: '.'
-          excludePattern: ':latest$'
-          keep: '3'
+      - name: Verify pushed digest
+        env:
+          POSTPORTAL_TEST_IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build-and-push.outputs.digest }}
+        run: bash tests/Security/Runtime/php-runtime-security.sh
 
   sign:
-    name: Sign Container Image
     runs-on: self-hosted
+    if: github.ref == 'refs/heads/main' && needs.build-and-push.result == 'success'
     needs: [build-and-push]
     permissions:
       contents: read
       id-token: write
-
     steps:
-      - name: Install Cosign
-        uses: sigstore/cosign-installer@59acb6260d9c0ba8f4a2f9d9b48431a222b68e20 # v3.5.0
+      - uses: sigstore/cosign-installer@59acb6260d9c0ba8f4a2f9d9b48431a222b68e20 # v3.5.0
         with:
-          cosign-release: 'v2.4.1'  # Use newer version that supports SIGSTORE PRIVATE KEY format
-
-      - name: Log in to Harbor Registry
-        uses: docker/login-action@0d4c9c5ea7693da7b068278f7b52bda2a190a446 # v3.2.0
+          cosign-release: 'v2.4.1'
+      - uses: docker/login-action@0d4c9c5ea7693da7b068278f7b52bda2a190a446 # v3.2.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ secrets.HARBOR_USERNAME }}
           password: ${{ secrets.HARBOR_PASSWORD }}
-
-      - name: Sign the container image with Cosign
-        env:
+      - env:
           COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
           COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
-        run: |
-          # Construct the full image reference from build outputs
-          IMAGE_DIGEST="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-and-push.outputs.digest }}"
-
-          echo "Signing image: ${IMAGE_DIGEST}"
-
-          # Sign using the full digest reference (registry/repo@sha256:...)
-          cosign sign --yes --key env://COSIGN_PRIVATE_KEY "${IMAGE_DIGEST}"
+        run: cosign sign --yes --key env://COSIGN_PRIVATE_KEY "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-and-push.outputs.digest }}"
 
   sbom:
-    name: Generate SBOM
     runs-on: self-hosted
+    if: github.ref == 'refs/heads/main' && needs.build-and-push.result == 'success'
     needs: [build-and-push]
     permissions:
       contents: read
-
     steps:
-      - name: Log in to Harbor Registry
-        uses: docker/login-action@0d4c9c5ea7693da7b068278f7b52bda2a190a446 # v3.2.0
+      - uses: docker/login-action@0d4c9c5ea7693da7b068278f7b52bda2a190a446 # v3.2.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ secrets.HARBOR_USERNAME }}
           password: ${{ secrets.HARBOR_PASSWORD }}
-
-      - name: Generate SBOM
-        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+      - uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
         with:
           image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-and-push.outputs.digest }}
           format: spdx-json
           output-file: sbom.spdx.json
           upload-artifact: false
-
-      - name: Upload SBOM
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: sbom-${{ needs.build-and-push.outputs.branch }}
+          name: sbom-main
           path: sbom.spdx.json
           retention-days: 90
 
-  sync-readme:
-    name: Sync README
+  promote:
+    name: Promote verified candidate
     runs-on: self-hosted
-    needs: [build-and-push]
-    permissions:
-      contents: write
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@d632683dd7b4114ad314bca15554477dd762a938 # v4.2.0
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Update docker-compose.yml with branch tag
-        run: |
-          BRANCH="${{ needs.build-and-push.outputs.branch }}"
-          echo "Updating docker-compose.yml image tag to: ${BRANCH}"
-          sed -i "s|image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:.*|image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${BRANCH}|" docker-compose.yml
-          echo "Updated docker-compose.yml:"
-          grep "image:" docker-compose.yml
-
-      - name: Sync README with source files
-        id: sync
-        uses: ./.github/actions/sync-readme
-        with:
-          fail-on-diff: 'false'
-
-      - name: Commit and push changes
-        if: steps.sync.outputs.changed == 'true'
-        run: |
-          git config --global user.name 'github-actions[bot]'
-          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
-          git add README.md docker-compose.yml
-          git commit -m "docs: auto-update README and docker-compose.yml for branch ${{ needs.build-and-push.outputs.branch }}"
-          git push
-
-  summary:
-    name: Build Summary
-    runs-on: self-hosted
-    needs: [build-and-push, sign, sbom, sync-readme, phpstan, composer-audit]
-    if: always()
+    if: github.ref == 'refs/heads/main' && needs.build-and-push.result == 'success' && needs.sign.result == 'success' && needs.sbom.result == 'success'
+    needs: [build-and-push, sign, sbom]
     permissions:
       contents: read
-
     steps:
-      - name: Generate Summary
+      - uses: actions/checkout@d632683dd7b4114ad314bca15554477dd762a938 # v4.2.0
+      - uses: docker/setup-buildx-action@d70bba72b1f3fd22344832f00baa16ece964efeb # v3.3.0
+      - uses: docker/login-action@0d4c9c5ea7693da7b068278f7b52bda2a190a446 # v3.2.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.HARBOR_USERNAME }}
+          password: ${{ secrets.HARBOR_PASSWORD }}
+      - name: Reject a superseded main commit
         run: |
-          # Check job statuses
-          BUILD_PUSH_STATUS="${{ needs.build-and-push.result }}"
-          SIGN_STATUS="${{ needs.sign.result }}"
-          SBOM_STATUS="${{ needs.sbom.result }}"
-          SYNC_STATUS="${{ needs.sync-readme.result }}"
-          PHPSTAN_STATUS="${{ needs.phpstan.result }}"
-          AUDIT_STATUS="${{ needs.composer-audit.result }}"
+          remote_sha="$(git ls-remote origin refs/heads/main | awk '{print $1}')"
+          test "$remote_sha" = "$GITHUB_SHA"
+      - name: Promote the verified digest without rebuilding
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          DIGEST: ${{ needs.build-and-push.outputs.digest }}
+        run: |
+          docker buildx imagetools create --prefer-index=false --tag "$IMAGE:main" --tag "$IMAGE:latest" "$IMAGE@$DIGEST"
+          test "$(docker buildx imagetools inspect "$IMAGE:main" --format '{{.Manifest.Digest}}')" = "$DIGEST"
+          test "$(docker buildx imagetools inspect "$IMAGE:latest" --format '{{.Manifest.Digest}}')" = "$DIGEST"
 
-          echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Branch:** ${{ needs.build-and-push.outputs.branch }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-
-          if [ "$BUILD_PUSH_STATUS" = "success" ]; then
-            echo "### Pull Command" >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
-            echo "docker pull ${{ needs.build-and-push.outputs.image-name }}" >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-          fi
-
-          echo "**Digest:** \`${{ needs.build-and-push.outputs.digest }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-
-          if [ "$SIGN_STATUS" = "success" ]; then
-            echo "**Signed:** ✅ Yes (Cosign)" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "**Signed:** ❌ Failed" >> $GITHUB_STEP_SUMMARY
-          fi
-          echo "" >> $GITHUB_STEP_SUMMARY
-          if [ "$SYNC_STATUS" = "success" ]; then
-            echo "**README Sync:** ✅ Passed" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "**README Sync:** ⏭️ Skipped (no changes)" >> $GITHUB_STEP_SUMMARY
-          fi
-          echo "" >> $GITHUB_STEP_SUMMARY
-          if [ "$PHPSTAN_STATUS" = "success" ]; then
-            echo "**Static Analysis:** ✅ Passed" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "**Static Analysis:** ❌ Failed" >> $GITHUB_STEP_SUMMARY
-          fi
-          echo "" >> $GITHUB_STEP_SUMMARY
-          if [ "$AUDIT_STATUS" = "success" ]; then
-            echo "**Dependency Audit:** ✅ Passed" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "**Dependency Audit:** ❌ Failed" >> $GITHUB_STEP_SUMMARY
-          fi
+  summary:
+    runs-on: ubuntu-latest
+    if: ${{ always() }}
+    needs: [ci, build-and-push, sign, sbom, promote]
+    permissions:
+      contents: read
+    steps:
+      - name: Report and enforce publication outcome
+        env:
+          CI_RESULT: ${{ needs.ci.result }}
+          BUILD_RESULT: ${{ needs.build-and-push.result }}
+          SIGN_RESULT: ${{ needs.sign.result }}
+          SBOM_RESULT: ${{ needs.sbom.result }}
+          PROMOTE_RESULT: ${{ needs.promote.result }}
+        run: |
+          printf 'CI=%s build=%s sign=%s SBOM=%s promote=%s\n' "$CI_RESULT" "$BUILD_RESULT" "$SIGN_RESULT" "$SBOM_RESULT" "$PROMOTE_RESULT" | tee -a "$GITHUB_STEP_SUMMARY"
+          test "$CI_RESULT" = success
+          test "$BUILD_RESULT" = success
+          test "$SIGN_RESULT" = success
+          test "$SBOM_RESULT" = success
+          test "$PROMOTE_RESULT" = success

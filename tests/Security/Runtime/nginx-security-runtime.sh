@@ -2,7 +2,7 @@
 # Exercises the deployed nginx configuration without the application entrypoint or database.
 set -euo pipefail
 
-ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../../.." && pwd)
+ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/../../.." && pwd)
 NAME="postportal-nginx-security-$$"
 IMAGE=${POSTPORTAL_TEST_IMAGE:-}
 
@@ -44,7 +44,7 @@ docker run -d --rm --name "$NAME" \
         for log in nginx_access.log nginx_error.log php_errors.log smtp.log; do
             printf "log\n" > "/var/www/html/$log"
         done
-        php-fpm8.1 -D
+        php-fpm -D -y /etc/php/8.5/fpm/php-fpm.conf
         exec nginx
     ' >/dev/null
 

@@ -451,7 +451,7 @@ final class ArchiveValidator
         try {
             self::copyValidatedUploadsDirectory($source, $source, $destination, $finfo);
         } finally {
-            finfo_close($finfo);
+            unset($finfo);
         }
     }
 
