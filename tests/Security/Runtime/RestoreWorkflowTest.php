@@ -81,6 +81,30 @@ final class RestoreWorkflowTest extends TestCase
         self::assertFileDoesNotExist($backup . '/nested/.gitkeep');
     }
 
+    public function testBackupCopyOfRealMediaDoesNotTriggerDeprecation(): void
+    {
+        $live = $this->root . '/uploads';
+        $backup = $this->root . '/backup';
+        mkdir($live, 0700);
+        file_put_contents($live . '/photo.png', $this->png());
+
+        set_error_handler(static function (int $severity, string $message, string $file, int $line): bool {
+            if ($severity === E_DEPRECATED) {
+                throw new \ErrorException($message, 0, $severity, $file, $line);
+            }
+
+            return false;
+        });
+        try {
+            $result = ArchiveValidator::copyUploadsForBackup($live, $backup);
+        } finally {
+            restore_error_handler();
+        }
+
+        self::assertTrue($result['success']);
+        self::assertFileExists($backup . '/photo.png');
+    }
+
     private function png(): string
     {
         return (string) base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', true);

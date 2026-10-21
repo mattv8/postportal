@@ -1,5 +1,38 @@
 # Post Portal - Production Monolithic Container
 # Contains Nginx, PHP-FPM, and MariaDB in a single container
+FROM ubuntu:22.04 AS php-builder
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    autoconf \
+    bison \
+    build-essential \
+    ca-certificates \
+    curl \
+    libargon2-dev \
+    libcurl4-openssl-dev \
+    libffi-dev \
+    libfreetype6-dev \
+    libjpeg-dev \
+    libonig-dev \
+    libpng-dev \
+    libedit-dev \
+    libsodium-dev \
+    libssl-dev \
+    libwebp-dev \
+    libxml2-dev \
+    libxpm-dev \
+    libxslt1-dev \
+    libzip-dev \
+    pkg-config \
+    re2c \
+    zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY docker/scripts/build-php.sh /usr/local/sbin/build-php
+RUN chmod +x /usr/local/sbin/build-php && /usr/local/sbin/build-php
+
 FROM ubuntu:22.04
 
 # Prevent interactive prompts during build
@@ -9,15 +42,23 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y \
     # Nginx web server
     nginx \
-    # PHP 8.1 and extensions
-    php8.1-fpm \
-    php8.1-mysql \
-    php8.1-gd \
-    php8.1-mbstring \
-    php8.1-xml \
-    php8.1-curl \
-    php8.1-zip \
-    php8.1-bcmath \
+    # PHP 8.5 source-build runtime libraries
+    libargon2-1 \
+    libcurl4 \
+    libffi8 \
+    libfreetype6 \
+    libjpeg8 \
+    libonig5 \
+    libpng16-16 \
+    libedit2 \
+    libsodium23 \
+    libssl3 \
+    libwebp7 \
+    libxml2 \
+    libxpm4 \
+    libxslt1.1 \
+    libzip4 \
+    zlib1g \
     # MariaDB server
     mariadb-server \
     mariadb-client \
@@ -41,26 +82,30 @@ RUN apt-get update && apt-get install -y \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
     && rm -rf /var/lib/mysql \
-    && install -d -m 700 -o mysql -g mysql /var/lib/mysql
+    && install -d -m 700 -o mysql -g mysql /var/lib/mysql \
+    && install -d -m 0700 -o www-data -g www-data /var/lib/php/sessions
+
+# Install PHP 8.5.12 compiled from the verified upstream archive.
+COPY --from=php-builder /opt/php /opt/php
+RUN ln -s /opt/php/bin/php /usr/local/bin/php \
+    && ln -s /opt/php/sbin/php-fpm /usr/local/sbin/php-fpm \
+    && install -d /etc/php/8.5/fpm/conf.d /etc/php/8.5/fpm/pool.d /run/php \
+    && ! ldd /opt/php/bin/php /opt/php/sbin/php-fpm | grep -q 'not found' \
+    && php -r 'exit(PHP_VERSION_ID >= 80512 && PHP_VERSION_ID < 80600 ? 0 : 1);'
 
 # Install Composer
 COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
 
-# Configure PHP-FPM to pass environment variables
-RUN echo "" >> /etc/php/8.1/fpm/pool.d/www.conf \
-    && echo "; Pass environment variables to PHP" >> /etc/php/8.1/fpm/pool.d/www.conf \
-    && echo "clear_env = no" >> /etc/php/8.1/fpm/pool.d/www.conf
+COPY docker/php/php-fpm.conf /etc/php/8.5/fpm/php-fpm.conf
+COPY docker/php/www.conf /etc/php/8.5/fpm/pool.d/www.conf
 
 # Configure PHP for large file uploads (backup/restore)
-RUN echo "; Custom PHP settings for backup/restore" > /etc/php/8.1/fpm/conf.d/99-custom.ini \
-    && echo "upload_max_filesize = 500M" >> /etc/php/8.1/fpm/conf.d/99-custom.ini \
-    && echo "post_max_size = 512M" >> /etc/php/8.1/fpm/conf.d/99-custom.ini \
-    && echo "max_execution_time = 600" >> /etc/php/8.1/fpm/conf.d/99-custom.ini \
-    && echo "max_input_time = 600" >> /etc/php/8.1/fpm/conf.d/99-custom.ini \
-    && echo "memory_limit = 512M" >> /etc/php/8.1/fpm/conf.d/99-custom.ini
-
-# Configure PHP-FPM to not daemonize
-RUN sed -i 's/;daemonize = yes/daemonize = no/g' /etc/php/8.1/fpm/php-fpm.conf
+RUN echo "; Custom PHP settings for backup/restore" > /etc/php/8.5/fpm/conf.d/99-custom.ini \
+    && echo "upload_max_filesize = 500M" >> /etc/php/8.5/fpm/conf.d/99-custom.ini \
+    && echo "post_max_size = 512M" >> /etc/php/8.5/fpm/conf.d/99-custom.ini \
+    && echo "max_execution_time = 600" >> /etc/php/8.5/fpm/conf.d/99-custom.ini \
+    && echo "max_input_time = 600" >> /etc/php/8.5/fpm/conf.d/99-custom.ini \
+    && echo "memory_limit = 512M" >> /etc/php/8.5/fpm/conf.d/99-custom.ini
 
 # Configure nginx
 RUN echo "daemon off;" >> /etc/nginx/nginx.conf

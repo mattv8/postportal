@@ -29,7 +29,7 @@ chmod -R 775 /var/www/html/storage
 
 printf 'upload_max_filesize = %s\npost_max_size = %s\nmemory_limit = %s\nmax_execution_time = %s\n' \
     "$PHP_UPLOAD_MAX_FILESIZE" "$PHP_POST_MAX_SIZE" "$PHP_MEMORY_LIMIT" "$PHP_MAX_EXECUTION_TIME" \
-    > /etc/php/8.1/fpm/conf.d/custom.ini
+    > /etc/php/8.5/fpm/conf.d/custom.ini
 printf '[mysqld]\nbind-address = %s\n' "$MYSQL_BIND_ADDRESS" > /etc/mysql/mariadb.conf.d/99-postportal-bind.cnf
 
 root_password_file=/var/lib/mysql/.postportal_mysql_root_password

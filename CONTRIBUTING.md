@@ -152,10 +152,22 @@ Use `--db-only` or `--media-only` flags to backup/restore selectively. Run with 
 ## CI/CD
 
 The project uses GitHub Actions to:
-1. Build container on every branch push
-2. Tag images with branch name (`:main`, `:feature-xyz`)
-3. Sign images with Cosign
-4. Push to Harbor registry at `hub.docker.visnovsky.us`
-5. Generate and attach SBOM (Software Bill of Materials)
+1. Validate pull requests to `main` on GitHub-hosted runners using PHP 8.5 with a minimum runtime floor of 8.5.12.
+2. Build and push a candidate production image after successful `main` CI.
+3. Verify that immutable candidate digest before publication.
+4. Sign that digest and generate its SBOM.
+5. Promote that same verified digest to `:main` and `:latest` without rebuilding.
 
-Main branch is tagged as `:latest`.
+PHP is built from the verified official PHP 8.5.12 source archive. `docker/scripts/build-php.sh` is the maintained record of the fixed release URL and SHA-256 checksum. Future PHP security updates require deliberately updating both values, testing both images, and publishing a new verified digest; `apt upgrade` does not update this source-built interpreter. The build-time common PHP configuration gives CLI commands a 512M default memory limit; the entrypoint sets normal running containers to `PHP_MEMORY_LIMIT=256M` by default. Migration, seed, backup, and restore commands must remain within their applicable limit unless an explicit container override is documented.
+
+### macOS container builds
+
+The Git index legitimately tracks both `src/Lib/*` and `src/lib/*`. A case-insensitive macOS checkout can collapse those directories in Docker's `COPY` context. Do not rename product directories. Build from a case-sensitive Linux checkout, or stream the Git-indexed files (including indexed uncommitted files) directly:
+
+```bash
+git ls-files -z --cached --others --exclude-standard | COPYFILE_DISABLE=1 tar --no-mac-metadata --no-xattrs --null -T - -cf - | docker build -f docker/Dockerfile -t postportal:local -
+```
+
+Disabling macOS metadata prevents AppleDouble `._*.sql` files from entering the source context; those binary sidecars are not application migrations.
+
+Repository rule templates and their activation procedure are in [docs/repository-rules.md](docs/repository-rules.md). They are not active merely because these files exist.

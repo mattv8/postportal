@@ -339,12 +339,16 @@ PHP
             'follow_location' => 0,
         ]]);
         $body = @file_get_contents($this->baseUrl . $path, false, $context);
-        if ($body === false || !isset($http_response_header[0])) {
+        // Avoid PHP 8.5's compile-time deprecation for the predefined response-header variable.
+        $responseHeaders = function_exists('http_get_last_response_headers')
+            ? http_get_last_response_headers()
+            : (get_defined_vars()['http_response_header'] ?? null);
+        if ($body === false || !is_array($responseHeaders) || !isset($responseHeaders[0])) {
             throw new RuntimeException('HTTP request failed for ' . $this->baseUrl . $path);
         }
-        preg_match('/\s(\d{3})\s/', $http_response_header[0], $matches);
+        preg_match('/\s(\d{3})\s/', $responseHeaders[0], $matches);
         $parsedHeaders = [];
-        foreach (array_slice($http_response_header, 1) as $header) {
+        foreach (array_slice($responseHeaders, 1) as $header) {
             if (str_contains($header, ':')) {
                 [$name, $value] = explode(':', $header, 2);
                 $parsedHeaders[strtolower(trim($name))] = trim($value);
