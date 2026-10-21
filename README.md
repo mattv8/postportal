@@ -143,6 +143,8 @@ Docker volumes persist:
 
 The easiest way to backup and restore is through the Admin panel. Navigate to **Admin → Backup** to download a complete `.tar.gz` archive containing both the database and all uploaded media. You can restore from any backup archive using the same interface.
 
+Database imports require a MariaDB client with sandbox support and disable local-file loading. Unsupported clients fail before database replacement. Dump client commands such as shell escapes and `source` are not supported. Media in a backup must pass the same bounded image validation used for uploads.
+
 > 🗒️ **Note:** For command-line backup and restore options, see the [Contributing Guide](CONTRIBUTING.md#backup--restore).
 
 ### Updating
@@ -176,13 +178,9 @@ Keep `DEFAULT_ADMIN_PASSWORD` non-empty, but an existing-volume restart does not
 
 ### If a Database Migration Fails
 
-In rare cases, a migration may fail due to schema drift (e.g., manual database changes or a previously interrupted migration). If this happens, you can reset the migration tracking and reapply:
+Migration failures stop startup. A failed SQL file may have applied some statements before the error; the runner does not mark it complete or treat duplicate errors as success. Preserve a backup, inspect the failure and actual schema, and reconcile the schema and migration history before retrying. Changing an already-applied migration also fails closed. Verified older release checksums for a small set of historical migrations, and the documented 06/07 manual markers, warn and skip without rewriting tracker metadata; all other checksum drift fails closed.
 
-```bash
-docker exec post-portal migrate --accept-data-loss
-```
-
-Despite the name, `--accept-data-loss` does **not** delete your data. It resets the migration history table and reapplies all migrations from scratch. Since migrations are idempotent (they check if changes already exist), your existing data remains intact. The flag exists to confirm you understand the migration state is being reset.
+`--accept-data-loss` alone does not repair migrations. Combining it with `--force-reset` **deletes application tables** and is only appropriate for an explicitly disposable database. Do not use reset flags to recover production data.
 
 ## Environment Variables
 
@@ -216,6 +214,17 @@ Note: MySQL root password is auto-generated for security.
 - `PHP_POST_MAX_SIZE` - Max POST size (default: `25M`)
 - `PHP_MEMORY_LIMIT` - PHP memory limit (default: `256M`)
 - `PHP_MAX_EXECUTION_TIME` - Max execution time in seconds (default: `60`)
+
+PHP's default upload limit is 20M even though nginx permits larger restore requests. Large restores require deliberate `PHP_UPLOAD_MAX_FILESIZE` and `PHP_POST_MAX_SIZE` overrides; the nginx limit alone does not raise PHP's limit.
+
+### Runtime Security Limits
+
+- Images must have a server-verified format and matching extension, at most 24 million pixels and 8192 pixels per side, and fit the available processing-memory budget. Backup copies are header-validated but not decoded, so legacy originals remain restorable; variant regeneration is budgeted. Crops must stay within image bounds; rotations use 90-degree steps. HEIC uploads are not supported.
+- Anonymous public APIs use separate direct-peer, normalized-URI nginx buckets: reads are 10 requests/second (burst 100), analytics 5/second (burst 100), and login/newsletter endpoints 2/second (burst 20); excess requests return 429. Admin APIs are outside these limiters. An empty `/etc/nginx/conf.d/postportal-real-ip.conf` is supplied for an operator-reviewed mounted real-IP policy; no forwarded header is trusted by default.
+- PHP workers receive an explicit application-environment allowlist, not the database root or bootstrap administrator password. Debug login forms no longer prefill the bootstrap password.
+- Application code is root-owned. Only storage, Smarty runtime directories, logs, and private session storage are writable by the application. Development host bind mounts retain their host-side ownership.
+- PHP sessions remain private to workers and use deliberate GC-managed 1440-second idle expiry; active requests refresh their session activity.
+- Newsletter verification links now show a confirmation page. Only an explicit same-origin POST activates a subscription; strict-origin referrer policy preserves HTTP browser compatibility without leaking tokens. A GET-only email scanner cannot confirm it, though a scanner that submits forms can still consume the token.
 
 ### Web Server
 - `PORT` - Host port to expose (default: `80`)

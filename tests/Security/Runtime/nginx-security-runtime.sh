@@ -4,16 +4,7 @@ set -euo pipefail
 
 ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/../../.." && pwd)
 NAME="postportal-nginx-security-$$"
-IMAGE=${POSTPORTAL_TEST_IMAGE:-}
-
-if [[ -z "$IMAGE" ]]; then
-    IMAGE=$(docker inspect --format '{{.Config.Image}}' postportal-dev 2>/dev/null || true)
-fi
-
-if [[ -z "$IMAGE" ]]; then
-    printf 'POSTPORTAL_TEST_IMAGE is required when postportal-dev is not running.\n' >&2
-    exit 2
-fi
+IMAGE=${POSTPORTAL_TEST_IMAGE:-postportal:ci}
 
 cleanup() {
     docker rm -f "$NAME" >/dev/null 2>&1 || true
@@ -24,6 +15,7 @@ docker run -d --rm --name "$NAME" \
     --entrypoint /bin/bash \
     -v "$ROOT/docker/nginx/default.conf:/etc/nginx/sites-available/default:ro" \
     -v "$ROOT/docker/nginx/fastcgi-cache.conf:/etc/nginx/conf.d/fastcgi-cache.conf:ro" \
+    -v "$ROOT/docker/nginx/runtime-policy.conf:/etc/nginx/conf.d/runtime-policy.conf:ro" \
     "$IMAGE" -ceu '
         mkdir -p /run/php /var/www/html/storage/uploads /var/www/html/logs /var/log/postportal
         printf "benign media\n" > /var/www/html/storage/uploads/photo.jpg

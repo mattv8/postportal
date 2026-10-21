@@ -16,6 +16,7 @@ use Intervention\Image\ImageManager;
 if (!class_exists('Composer\\Autoload\\ClassLoader', false)) {
     require_once(__DIR__ . '/../vendor/autoload.php');
 }
+require_once dirname(__DIR__) . '/Lib/MediaPolicy.php';
 
 class MediaProcessor
 {
@@ -24,10 +25,6 @@ class MediaProcessor
     private string $variantsDir;
     private string $webRoot;
     private int $maxFileSize = 20971520; // 20MB in bytes
-    /** @var array<string> */
-    private array $allowedFormats = ['image/jpeg', 'image/png', 'image/heic', 'image/webp'];
-    /** @var array<string> */
-    private array $allowedExtensions = ['jpg', 'jpeg', 'png', 'heic', 'webp'];
     /** @var array<int> */
     private array $variantWidths = [1600, 800, 400];
     private ImageManager $manager;
@@ -49,17 +46,6 @@ class MediaProcessor
         $this->manager = new ImageManager(['driver' => 'gd']);
 
         $this->ensureDirectories();
-    }
-
-    /**
-     * Safely write file contents with contextual logging.
-     */
-    private function writeFile(string $path, string $data): void
-    {
-        if (@file_put_contents($path, $data) === false) {
-            error_log('Failed to write file: ' . $path);
-            throw new Exception('Failed to write file to disk');
-        }
     }
 
     /**
@@ -177,52 +163,24 @@ class MediaProcessor
             return $validation;
         }
 
+        $image = $validation['data'];
+        $cropValidation = MediaPolicy::validateCrop($cropData, $image['width'], $image['height']);
+        if (!$cropValidation['success']) {
+            return $cropValidation;
+        }
+        $crop = $cropValidation['data'];
+
         try {
-            // Generate unique filename
-            $extension = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
-            $uniqueFilename = uniqid('img_' . time() . '_') . '.' . $extension;
+            $uniqueFilename = MediaPolicy::randomFilename('img_', $image['mime']);
             $originalPath = $this->originalsDir . '/' . $uniqueFilename;
 
-            // Handle HEIC conversion
-            if ($file['type'] === 'image/heic' || $extension === 'heic') {
-                $converted = $this->convertHeicToJpeg($file['tmp_name']);
-                if ($converted['success']) {
-                    $uniqueFilename = str_replace('.heic', '.jpg', $uniqueFilename);
-                    $originalPath = $this->originalsDir . '/' . $uniqueFilename;
-                    $this->writeFile($originalPath, $converted['data']);
-                    $file['type'] = 'image/jpeg';
-                } else {
-                    return ['success' => false, 'error' => 'Failed to convert HEIC image'];
-                }
-            } else {
-                // Move uploaded file to originals directory
-                // Use copy() as fallback for CLI/seed scripts where move_uploaded_file() fails
-                $this->moveUploadedFile($file['tmp_name'], $originalPath);
-            }
+            $this->moveUploadedFile($file['tmp_name'], $originalPath);
 
-            // Apply crop if provided
-            if ($cropData && isset($cropData['width']) && $cropData['width'] > 0) {
+            if ($crop !== ['rotate' => 0]) {
                 $img = $this->manager->make($originalPath);
-
-                // Apply rotation first if specified (before crop coordinates are applied)
-                if (isset($cropData['rotate']) && (int)$cropData['rotate'] !== 0) {
-                    // Cropper.js uses counter-clockwise rotation, Intervention uses clockwise
-                    // So we negate the rotation angle
-                    $img->rotate(-(int)$cropData['rotate']);
-                }
-
-                $img->crop(
-                    (int)$cropData['width'],
-                    (int)$cropData['height'],
-                    (int)$cropData['x'],
-                    (int)$cropData['y']
-                );
+                $this->applyTransform($img, $crop);
                 $img->save($originalPath, 90);
-            } elseif ($cropData && isset($cropData['rotate']) && (int)$cropData['rotate'] !== 0) {
-                // Apply rotation only (no crop)
-                $img = $this->manager->make($originalPath);
-                $img->rotate(-(int)$cropData['rotate']);
-                $img->save($originalPath, 90);
+                unset($img);
             }
 
             // Strip EXIF data for privacy (keep orientation)
@@ -240,7 +198,7 @@ class MediaProcessor
             $mediaData = [
                 'filename' => $uniqueFilename,
                 'original_filename' => $file['name'],
-                'mime_type' => $file['type'],
+                'mime_type' => $image['mime'],
                 'size_bytes' => filesize($originalPath),
                 'width' => $width,
                 'height' => $height,
@@ -264,7 +222,7 @@ class MediaProcessor
     /**
      * Validate uploaded file
      * @param array<string, mixed> $file
-     * @return array{success: bool, error?: string}
+     * @return array{success: bool, data?: array{mime: string, width: int, height: int, extension: string}, error?: string}
      */
     private function validateUpload(array $file): array
     {
@@ -282,33 +240,25 @@ class MediaProcessor
             return ['success' => false, 'error' => $err];
         }
 
-        // Validate MIME type
-        $finfo = finfo_open(FILEINFO_MIME_TYPE);
-        $mimeType = finfo_file($finfo, $file['tmp_name']);
-        finfo_close($finfo);
-
-        if (!in_array($mimeType, $this->allowedFormats) && !in_array($file['type'], $this->allowedFormats)) {
-            $err = 'Invalid file format. Only JPG, PNG, HEIC, and WebP are allowed';
-            error_log('MediaProcessor: ' . $err . ' (mime: ' . $mimeType . ', type: ' . ($file['type'] ?? 'n/a') . ')');
-            return ['success' => false, 'error' => $err];
+        $validation = MediaPolicy::inspectUpload((string) $file['tmp_name'], (string) $file['name']);
+        if (!$validation['success']) {
+            error_log('MediaProcessor: ' . $validation['error']);
         }
 
-        // Validate extension
-        $extension = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
-        if (!in_array($extension, $this->allowedExtensions)) {
-            $err = 'Invalid file extension';
-            error_log('MediaProcessor: ' . $err . ' (' . $extension . ')');
-            return ['success' => false, 'error' => $err];
+        return $validation;
+    }
+
+    /** @param array{rotate: int, x?: int, y?: int, width?: int, height?: int} $crop */
+    private function applyTransform(mixed $image, array $crop): void
+    {
+        if ($crop['rotate'] !== 0) {
+            // Cropper.js uses counter-clockwise rotation, Intervention uses clockwise.
+            $image->rotate(-$crop['rotate']);
         }
 
-        // Check if file is actually an image
-        if (!getimagesize($file['tmp_name']) && $extension !== 'heic') {
-            $err = 'File is not a valid image';
-            error_log('MediaProcessor: ' . $err);
-            return ['success' => false, 'error' => $err];
+        if (isset($crop['width'])) {
+            $image->crop($crop['width'], $crop['height'], $crop['x'], $crop['y']);
         }
-
-        return ['success' => true];
     }
 
     /**
@@ -430,34 +380,6 @@ class MediaProcessor
     }
 
     /**
-     * Convert HEIC to JPEG
-     * Note: Requires imagick extension with HEIC support
-     *
-     * @param string $heicPath Path to HEIC file
-     * @return array{success: bool, data?: string, error?: string}
-     */
-    private function convertHeicToJpeg(string $heicPath): array
-    {
-        if (!extension_loaded('imagick')) {
-            return ['success' => false, 'error' => 'Imagick extension not available'];
-        }
-
-        try {
-            $imagick = new \Imagick($heicPath);
-            $imagick->setImageFormat('jpeg');
-            $imagick->setImageCompressionQuality(90);
-            $jpegData = $imagick->getImageBlob();
-            $imagick->clear();
-            $imagick->destroy();
-
-            return ['success' => true, 'data' => $jpegData];
-        } catch (Exception $e) {
-            error_log("HEIC conversion error: " . $e->getMessage());
-            return ['success' => false, 'error' => $e->getMessage()];
-        }
-    }
-
-    /**
      * Regenerate variants for an existing original image
      *
      * @param string $originalPath Path to original image
@@ -470,6 +392,11 @@ class MediaProcessor
 
         if (!file_exists($fullPath)) {
             return ['success' => false, 'error' => 'Original file not found'];
+        }
+
+        $validation = MediaPolicy::inspectForProcessing($fullPath, $filename);
+        if (!$validation['success']) {
+            return $validation;
         }
 
         try {
@@ -578,49 +505,24 @@ class MediaProcessor
             return $validation;
         }
 
+        $image = $validation['data'];
+        $cropValidation = MediaPolicy::validateCrop($cropData, $image['width'], $image['height']);
+        if (!$cropValidation['success']) {
+            return $cropValidation;
+        }
+        $crop = $cropValidation['data'];
+
         try {
-            // Generate unique filename
-            $extension = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
-            $uniqueFilename = 'logo_' . uniqid(time() . '_') . '.' . $extension;
+            $uniqueFilename = MediaPolicy::randomFilename('logo_', $image['mime']);
             $originalPath = $this->originalsDir . '/' . $uniqueFilename;
 
-            // Handle HEIC conversion
-            if ($file['type'] === 'image/heic' || $extension === 'heic') {
-                $converted = $this->convertHeicToJpeg($file['tmp_name']);
-                if ($converted['success']) {
-                    $uniqueFilename = str_replace('.heic', '.jpg', $uniqueFilename);
-                    $originalPath = $this->originalsDir . '/' . $uniqueFilename;
-                    $this->writeFile($originalPath, $converted['data']);
-                    $file['type'] = 'image/jpeg';
-                } else {
-                    return ['success' => false, 'error' => 'Failed to convert HEIC image'];
-                }
-            } else {
-                // Move uploaded file to originals directory
-                // Use copy() as fallback for CLI/seed scripts where move_uploaded_file() fails
-                $this->moveUploadedFile($file['tmp_name'], $originalPath);
-            }
+            $this->moveUploadedFile($file['tmp_name'], $originalPath);
 
-            // Load image for cropping
-            $img = $this->manager->make($originalPath);
-
-            // Apply rotation first if specified
-            if ($cropData && isset($cropData['rotate']) && (int)$cropData['rotate'] !== 0) {
-                $img->rotate(-(int)$cropData['rotate']);
-                $img->save($originalPath, 90);
-                // Reload image after rotation for accurate crop coordinates
+            if ($crop !== ['rotate' => 0]) {
                 $img = $this->manager->make($originalPath);
-            }
-
-            // Apply crop if provided
-            if ($cropData && isset($cropData['width']) && $cropData['width'] > 0) {
-                $img->crop(
-                    (int)$cropData['width'],
-                    (int)$cropData['height'],
-                    (int)$cropData['x'],
-                    (int)$cropData['y']
-                );
+                $this->applyTransform($img, $crop);
                 $img->save($originalPath, 90);
+                unset($img);
             }
 
             // Strip EXIF data
@@ -637,7 +539,7 @@ class MediaProcessor
             $mediaData = [
                 'filename' => $uniqueFilename,
                 'original_filename' => $file['name'],
-                'mime_type' => $file['type'],
+                'mime_type' => $image['mime'],
                 'size_bytes' => filesize($originalPath),
                 'width' => $width,
                 'height' => $height,
@@ -674,47 +576,21 @@ class MediaProcessor
             return $validation;
         }
 
+        $image = $validation['data'];
+        $cropValidation = MediaPolicy::validateCrop($cropData, $image['width'], $image['height']);
+        if (!$cropValidation['success']) {
+            return $cropValidation;
+        }
+        $crop = $cropValidation['data'];
+
         try {
-            // Generate unique filename
-            $extension = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
-            $uniqueFilename = 'favicon_' . uniqid(time() . '_') . '.' . $extension;
+            $uniqueFilename = MediaPolicy::randomFilename('favicon_', $image['mime']);
             $originalPath = $this->originalsDir . '/' . $uniqueFilename;
 
-            // Handle HEIC conversion
-            if ($file['type'] === 'image/heic' || $extension === 'heic') {
-                $converted = $this->convertHeicToJpeg($file['tmp_name']);
-                if ($converted['success']) {
-                    $uniqueFilename = str_replace('.heic', '.jpg', $uniqueFilename);
-                    $originalPath = $this->originalsDir . '/' . $uniqueFilename;
-                    $this->writeFile($originalPath, $converted['data']);
-                } else {
-                    return ['success' => false, 'error' => 'Failed to convert HEIC image'];
-                }
-            } else {
-                // Use copy() as fallback for CLI/seed scripts where move_uploaded_file() fails
-                $this->moveUploadedFile($file['tmp_name'], $originalPath);
-            }
+            $this->moveUploadedFile($file['tmp_name'], $originalPath);
 
-            // Load image for cropping
             $img = $this->manager->make($originalPath);
-
-            // Apply rotation first if specified
-            if ($cropData && isset($cropData['rotate']) && (int)$cropData['rotate'] !== 0) {
-                $img->rotate(-(int)$cropData['rotate']);
-                $img->save($originalPath, 90);
-                // Reload image after rotation for accurate crop coordinates
-                $img = $this->manager->make($originalPath);
-            }
-
-            // Apply crop if provided
-            if ($cropData && isset($cropData['width']) && $cropData['width'] > 0) {
-                $img->crop(
-                    (int)$cropData['width'],
-                    (int)$cropData['height'],
-                    (int)$cropData['x'],
-                    (int)$cropData['y']
-                );
-            }
+            $this->applyTransform($img, $crop);
 
             // Ensure square aspect ratio for favicon
             $size = min($img->width(), $img->height());
@@ -739,7 +615,7 @@ class MediaProcessor
             $mediaData = [
                 'filename' => $uniqueFilename,
                 'original_filename' => $file['name'],
-                'mime_type' => 'image/png',
+                'mime_type' => $image['mime'],
                 'size_bytes' => filesize($originalPath),
                 'width' => $width,
                 'height' => $height,

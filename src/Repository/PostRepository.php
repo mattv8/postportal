@@ -294,7 +294,7 @@ class PostRepository extends BaseRepository implements PostRepositoryInterface
                     unique_impression_count = unique_impression_count + ?,
                     view_count = view_count + ?,
                     unique_view_count = unique_view_count + ?,
-                    updated_at = CURRENT_TIMESTAMP
+                    updated_at = updated_at
                 WHERE id = ? AND status = "published" AND deleted_at IS NULL';
 
         $this->execute($sql, [$impressionInc, $uniqueImpressionInc, $viewInc, $uniqueViewInc, $postId]);

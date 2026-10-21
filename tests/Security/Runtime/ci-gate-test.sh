@@ -20,7 +20,7 @@ run_case() {
     fi
 }
 
-success='{"phpunit":{"result":"success"},"phpstan":{"result":"success"},"composer-audit":{"result":"success"},"readme-consistency":{"result":"success"},"container-runtime":{"result":"success"}}'
+success='{"phpunit":{"result":"success"},"phpstan":{"result":"success"},"composer-audit":{"result":"success"},"security-checks":{"result":"success"},"readme-consistency":{"result":"success"},"container-runtime":{"result":"success"}}'
 run_case 'all mandatory jobs succeed' "$success" 0
 run_case 'failed dependency blocks gate' "${success/success/failed}" 1
 run_case 'cancelled dependency blocks gate' "${success/success/cancelled}" 1

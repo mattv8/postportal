@@ -21,25 +21,25 @@ jobs:
       contents: read
 
   build-and-push:
-    name: Build and Push Container Image
-    runs-on: self-hosted
+    name: Build and push candidate image
     if: github.ref == 'refs/heads/main'
     needs: [ci]
+    runs-on: self-hosted
+    environment: production
     permissions:
       contents: read
     outputs:
-      branch: main
-      tags: ${{ steps.meta.outputs.tags }}
       digest: ${{ steps.build-and-push.outputs.digest }}
-      image-name: ${{ steps.meta.outputs.image-name }}
     steps:
       - uses: actions/checkout@d632683dd7b4114ad314bca15554477dd762a938 # v4.2.0
+        with:
+          persist-credentials: false
       - uses: docker/setup-buildx-action@d70bba72b1f3fd22344832f00baa16ece964efeb # v3.3.0
       - id: meta
         name: Set candidate tag
         run: |
-          echo "tags=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:candidate-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
-          echo "image-name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:candidate-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          CANDIDATE_TAG="${REGISTRY}/${IMAGE_NAME}:candidate-${GITHUB_SHA}"
+          printf 'tag=%s\n' "$CANDIDATE_TAG" >> "$GITHUB_OUTPUT"
       - uses: docker/login-action@0d4c9c5ea7693da7b068278f7b52bda2a190a446 # v3.2.0
         with:
           registry: ${{ env.REGISTRY }}
@@ -54,16 +54,18 @@ jobs:
           push: true
           pull: true
           no-cache: true
-          tags: ${{ steps.meta.outputs.tags }}
+          tags: ${{ steps.meta.outputs.tag }}
       - name: Verify pushed digest
         env:
           POSTPORTAL_TEST_IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build-and-push.outputs.digest }}
         run: bash tests/Security/Runtime/php-runtime-security.sh
 
   sign:
+    name: Sign candidate digest
     runs-on: self-hosted
     if: github.ref == 'refs/heads/main' && needs.build-and-push.result == 'success'
     needs: [build-and-push]
+    environment: production
     permissions:
       contents: read
       id-token: write
@@ -76,15 +78,19 @@ jobs:
           registry: ${{ env.REGISTRY }}
           username: ${{ secrets.HARBOR_USERNAME }}
           password: ${{ secrets.HARBOR_PASSWORD }}
-      - env:
+      - name: Sign immutable image digest
+        env:
           COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
           COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
-        run: cosign sign --yes --key env://COSIGN_PRIVATE_KEY "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-and-push.outputs.digest }}"
+          IMAGE_DIGEST: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-and-push.outputs.digest }}
+        run: cosign sign --yes --key env://COSIGN_PRIVATE_KEY "$IMAGE_DIGEST"
 
   sbom:
+    name: Generate SBOM
     runs-on: self-hosted
     if: github.ref == 'refs/heads/main' && needs.build-and-push.result == 'success'
     needs: [build-and-push]
+    environment: production
     permissions:
       contents: read
     steps:
@@ -110,10 +116,13 @@ jobs:
     runs-on: self-hosted
     if: github.ref == 'refs/heads/main' && needs.build-and-push.result == 'success' && needs.sign.result == 'success' && needs.sbom.result == 'success'
     needs: [build-and-push, sign, sbom]
+    environment: production
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@d632683dd7b4114ad314bca15554477dd762a938 # v4.2.0
+        with:
+          persist-credentials: false
       - uses: docker/setup-buildx-action@d70bba72b1f3fd22344832f00baa16ece964efeb # v3.3.0
       - uses: docker/login-action@0d4c9c5ea7693da7b068278f7b52bda2a190a446 # v3.2.0
         with:
@@ -134,6 +143,7 @@ jobs:
           test "$(docker buildx imagetools inspect "$IMAGE:latest" --format '{{.Manifest.Digest}}')" = "$DIGEST"
 
   summary:
+    name: Build Summary
     runs-on: ubuntu-latest
     if: ${{ always() }}
     needs: [ci, build-and-push, sign, sbom, promote]

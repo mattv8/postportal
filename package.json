@@ -1,0 +1,7 @@
+{
+  "name": "postportal-build-tools",
+  "private": true,
+  "devDependencies": {
+    "terser": "5.39.0"
+  }
+}

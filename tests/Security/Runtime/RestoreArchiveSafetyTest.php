@@ -135,6 +135,20 @@ final class RestoreArchiveSafetyTest extends TestCase
         ArchiveValidator::cleanupStaging($result['staging_dir']);
     }
 
+    public function testValidGifMediaArchiveRemainsRestorable(): void
+    {
+        $archive = $this->archive('gif-media', [
+            ['name' => 'database.sql', 'data' => 'SELECT 1;'],
+            ['name' => 'uploads/tiny.gif', 'data' => $this->gif()],
+        ]);
+
+        $result = ArchiveValidator::extractToStaging($archive);
+
+        self::assertTrue($result['success']);
+        self::assertTrue(ArchiveValidator::validateMediaFiles($result['staging_dir'])['valid']);
+        ArchiveValidator::cleanupStaging($result['staging_dir']);
+    }
+
     public function testRootDirectoryEntryIsIgnoredWhenProperlyFormatted(): void
     {
         // Tar created from '.' has a root entry; must be ignored if it's a directory with size 0
@@ -286,6 +300,11 @@ final class RestoreArchiveSafetyTest extends TestCase
     private function png(): string
     {
         return (string) base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', true);
+    }
+
+    private function gif(): string
+    {
+        return (string) base64_decode('R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==', true);
     }
 
     private function removeTree(string $path): void

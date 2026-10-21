@@ -46,7 +46,7 @@ for bundle_name in "${!BUNDLES[@]}"; do
     echo "  Creating ${bundle_name}..."
 
     # Concatenate files with semicolon separators for safety
-    > "$temp_path"
+    : > "$temp_path"
 
     # Add console override to core bundle (loaded first on all pages)
     if [[ "$bundle_name" == "core.bundle.js" ]]; then
@@ -56,22 +56,20 @@ for bundle_name in "${!BUNDLES[@]}"; do
 
     for file in $files; do
         if [[ -f "${JS_DIR}/${file}" ]]; then
-            echo "/* === ${file} === */" >> "$temp_path"
-            cat "${JS_DIR}/${file}" >> "$temp_path"
-            echo ";" >> "$temp_path"
+            {
+                echo "/* === ${file} === */"
+                cat "${JS_DIR}/${file}"
+                echo ";"
+            } >> "$temp_path"
         else
             echo "    Warning: ${file} not found, skipping"
         fi
     done
 
     # Minify with terser
-    if command -v terser &> /dev/null; then
-        terser "$temp_path" -c -m --comments false -o "$bundle_path"
-        rm "$temp_path"
-    else
-        echo "    Warning: terser not found, using unminified bundle"
-        mv "$temp_path" "$bundle_path"
-    fi
+    command -v terser >/dev/null 2>&1 || { echo 'terser is required for production bundles' >&2; exit 1; }
+    terser "$temp_path" -c -m --comments false -o "$bundle_path"
+    rm "$temp_path"
 
     # Track size
     if [[ -f "$bundle_path" ]]; then
@@ -121,4 +119,5 @@ total_size=0
 for size in "${BUNDLE_SIZES[@]}"; do
     total_size=$((total_size + size))
 done
-echo "Total bundle size: ${total_size} bytes ($(echo "scale=2; ${total_size}/1024" | bc)KB)"
+total_kilobytes=$(awk -v bytes="$total_size" 'BEGIN { printf "%.2f", bytes / 1024 }')
+echo "Total bundle size: ${total_size} bytes (${total_kilobytes}KB)"

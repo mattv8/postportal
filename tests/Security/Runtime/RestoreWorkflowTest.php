@@ -64,6 +64,23 @@ final class RestoreWorkflowTest extends TestCase
         self::assertFalse(ArchiveValidator::copyUploadsForBackup($live, $this->root . '/backup')['success']);
     }
 
+    public function testOversizedImageMetadataCannotPrepareReplacementOrChangeLiveUploads(): void
+    {
+        $live = $this->root . '/uploads';
+        $staging = $this->root . '/staging';
+        mkdir($live, 0700);
+        mkdir($staging . '/uploads', 0700, true);
+        file_put_contents($live . '/preserve.png', $this->png());
+        $originalHash = hash_file('sha256', $live . '/preserve.png');
+        file_put_contents($staging . '/uploads/oversized.png', $this->oversizedPngMetadata());
+
+        $result = ArchiveValidator::prepareUploadsReplacement($staging, $live);
+
+        self::assertFalse($result['success']);
+        self::assertSame($originalHash, hash_file('sha256', $live . '/preserve.png'));
+        self::assertSame([], glob($this->root . '/.restore_new_*') ?: []);
+    }
+
     public function testBackupCopyExcludesGitkeepAlongsideValidImages(): void
     {
         $live = $this->root . '/uploads';
@@ -71,11 +88,13 @@ final class RestoreWorkflowTest extends TestCase
         mkdir($live . '/nested', 0700, true);
         file_put_contents($live . '/.gitkeep', '');
         file_put_contents($live . '/photo.png', $this->png());
+        file_put_contents($live . '/legacy-large.png', $this->largeLegacyPngMetadata());
         file_put_contents($live . '/nested/.gitkeep', '');
         file_put_contents($live . '/nested/photo.png', $this->png());
 
         self::assertTrue(ArchiveValidator::copyUploadsForBackup($live, $backup)['success']);
         self::assertFileExists($backup . '/photo.png');
+        self::assertFileExists($backup . '/legacy-large.png');
         self::assertFileExists($backup . '/nested/photo.png');
         self::assertFileDoesNotExist($backup . '/.gitkeep');
         self::assertFileDoesNotExist($backup . '/nested/.gitkeep');
@@ -108,6 +127,17 @@ final class RestoreWorkflowTest extends TestCase
     private function png(): string
     {
         return (string) base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', true);
+    }
+
+    private function oversizedPngMetadata(): string
+    {
+        $image = $this->png();
+        return substr_replace($image, pack('NN', 8193, 1), 16, 8);
+    }
+
+    private function largeLegacyPngMetadata(): string
+    {
+        return substr_replace($this->png(), pack('NN', 4000, 2001), 16, 8);
     }
 
     private function remove(string $path): void

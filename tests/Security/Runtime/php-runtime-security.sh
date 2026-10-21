@@ -111,6 +111,7 @@ echo json_encode([
     'mysqli_default_socket' => ini_get('mysqli.default_socket'),
     'pdo_mysql_default_socket' => ini_get('pdo_mysql.default_socket'),
     'session_gc_divisor' => ini_get('session.gc_divisor'),
+    'session_gc_maxlifetime' => ini_get('session.gc_maxlifetime'),
     'session_gc_probability' => ini_get('session.gc_probability'),
     'session_save_path' => ini_get('session.save_path'),
     'session_upload_progress_enabled' => ini_get('session.upload_progress.enabled'),
@@ -146,7 +147,7 @@ PHP
         if ($policy["mysqli_default_socket"] !== "/run/mysqld/mysqld.sock" || $policy["pdo_mysql_default_socket"] !== "/run/mysqld/mysqld.sock") {
             throw new RuntimeException("FPM MySQL socket defaults are incorrect");
         }
-        if ($policy["session_save_path"] !== "/var/lib/php/sessions" || $policy["session_gc_probability"] !== "1" || $policy["session_gc_divisor"] !== "1000") {
+        if ($policy["session_save_path"] !== "/var/lib/php/sessions" || $policy["session_gc_probability"] !== "1" || $policy["session_gc_divisor"] !== "100" || $policy["session_gc_maxlifetime"] !== "1440") {
             throw new RuntimeException("FPM session storage or garbage collection policy is incorrect");
         }
         if (!is_int($policy["session_gc_deleted"]) || $policy["session_gc_deleted"] < 1 || $policy["session_gc_fixture_deleted"] !== true) {

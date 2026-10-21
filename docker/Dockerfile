@@ -94,18 +94,11 @@ RUN ln -s /opt/php/bin/php /usr/local/bin/php \
     && php -r 'exit(PHP_VERSION_ID >= 80512 && PHP_VERSION_ID < 80600 ? 0 : 1);'
 
 # Install Composer
-COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
+COPY --from=composer:2.10.3@sha256:d0c32820c62cc860fddd22adceed4eeda7698b093a7a88d503414172ce400626 /usr/bin/composer /usr/bin/composer
 
 COPY docker/php/php-fpm.conf /etc/php/8.5/fpm/php-fpm.conf
 COPY docker/php/www.conf /etc/php/8.5/fpm/pool.d/www.conf
-
-# Configure PHP for large file uploads (backup/restore)
-RUN echo "; Custom PHP settings for backup/restore" > /etc/php/8.5/fpm/conf.d/99-custom.ini \
-    && echo "upload_max_filesize = 500M" >> /etc/php/8.5/fpm/conf.d/99-custom.ini \
-    && echo "post_max_size = 512M" >> /etc/php/8.5/fpm/conf.d/99-custom.ini \
-    && echo "max_execution_time = 600" >> /etc/php/8.5/fpm/conf.d/99-custom.ini \
-    && echo "max_input_time = 600" >> /etc/php/8.5/fpm/conf.d/99-custom.ini \
-    && echo "memory_limit = 512M" >> /etc/php/8.5/fpm/conf.d/99-custom.ini
+COPY docker/php/custom.ini /etc/php/8.5/fpm/conf.d/99-custom.ini
 
 # Configure nginx
 RUN echo "daemon off;" >> /etc/nginx/nginx.conf
@@ -146,6 +139,8 @@ RUN mkdir -p /var/www/html \
 # Copy nginx configuration
 COPY docker/nginx/default.conf /etc/nginx/sites-available/default
 COPY docker/nginx/fastcgi-cache.conf /etc/nginx/conf.d/fastcgi-cache.conf
+COPY docker/nginx/runtime-policy.conf /etc/nginx/conf.d/runtime-policy.conf
+COPY docker/nginx/real-ip.conf /etc/nginx/conf.d/postportal-real-ip.conf
 
 # Copy composer files first for better layer caching
 COPY composer.json composer.lock /var/www/html/
@@ -154,8 +149,10 @@ COPY composer.json composer.lock /var/www/html/
 COPY src/ /var/www/html/
 RUN chown -R www-data:www-data /var/www/html
 
-# Install terser for JavaScript minification and bundling
-RUN npm install -g terser
+# Install the locked build-only JavaScript minifier.
+COPY package.json package-lock.json /var/www/html/
+WORKDIR /var/www/html
+RUN npm ci --ignore-scripts
 
 # Copy and run bundle build script to create optimized JS bundles
 COPY docker/scripts/build-bundles.sh /docker-scripts/build-bundles.sh
@@ -165,14 +162,14 @@ RUN dos2unix /docker-scripts/build-bundles.sh && chmod +x /docker-scripts/build-
 # This reduces HTTP requests by combining related scripts into single bundles
 RUN mkdir -p /var/www/html/js/bundles \
     && cd /var/www/html \
-    && /docker-scripts/build-bundles.sh
+    && PATH="/var/www/html/node_modules/.bin:$PATH" /docker-scripts/build-bundles.sh
 
 # Also minify individual JS files (for any not included in bundles)
 RUN find /var/www/html/js -maxdepth 1 -name "*.js" -type f -exec sh -c \
-    'terser "$1" -c -m --comments false -o "$1.min" && mv "$1.min" "$1"' _ {} \;
+    'status=0; for file do if ./node_modules/.bin/terser "$file" -c -m --comments false -o "$file.min" && mv "$file.min" "$file"; then :; else status=1; fi; done; exit "$status"' sh {} + \
+    && rm -rf /var/www/html/node_modules /var/www/html/package.json /var/www/html/package-lock.json
 
 # Install Composer dependencies
-WORKDIR /var/www/html
 RUN composer install --no-dev --optimize-autoloader --no-interaction
 
 # Copy database migrations
@@ -187,6 +184,13 @@ COPY docker/scripts/demo-reset.sh /docker-scripts/demo-reset.sh
 COPY docker/scripts/cache-purge.sh /docker-scripts/cache-purge.sh
 COPY docker/scripts/backup-restore.sh /docker-scripts/backup-restore.sh
 RUN dos2unix /docker-scripts/*.sh && chmod +x /docker-scripts/*.sh
+
+# Keep executable application code immutable to workers; only runtime data is writable.
+RUN chown -R root:root /var/www/html \
+    && find /var/www/html -type d -exec chmod 755 {} + \
+    && find /var/www/html -type f -exec chmod 644 {} + \
+    && install -d -m 775 -o www-data -g www-data /var/www/html/storage /var/www/html/templates_c /var/www/html/cache /var/log/postportal \
+    && install -d -m 700 -o www-data -g www-data /var/lib/php/sessions
 
 # Create convenience command wrappers
 RUN ln -sf /docker-scripts/import-database.sh /usr/local/bin/import \

@@ -91,18 +91,11 @@ RUN ln -s /opt/php/bin/php /usr/local/bin/php \
     && php -r 'exit(PHP_VERSION_ID >= 80512 && PHP_VERSION_ID < 80600 ? 0 : 1);'
 
 # Install Composer
-COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
+COPY --from=composer:2.10.3@sha256:d0c32820c62cc860fddd22adceed4eeda7698b093a7a88d503414172ce400626 /usr/bin/composer /usr/bin/composer
 
 COPY docker/php/php-fpm.conf /etc/php/8.5/fpm/php-fpm.conf
 COPY docker/php/www.conf /etc/php/8.5/fpm/pool.d/www.conf
-
-# Configure PHP for large file uploads (backup/restore)
-RUN echo "; Custom PHP settings for backup/restore" > /etc/php/8.5/fpm/conf.d/99-custom.ini \
-    && echo "upload_max_filesize = 500M" >> /etc/php/8.5/fpm/conf.d/99-custom.ini \
-    && echo "post_max_size = 512M" >> /etc/php/8.5/fpm/conf.d/99-custom.ini \
-    && echo "max_execution_time = 600" >> /etc/php/8.5/fpm/conf.d/99-custom.ini \
-    && echo "max_input_time = 600" >> /etc/php/8.5/fpm/conf.d/99-custom.ini \
-    && echo "memory_limit = 512M" >> /etc/php/8.5/fpm/conf.d/99-custom.ini
+COPY docker/php/custom.ini /etc/php/8.5/fpm/conf.d/99-custom.ini
 
 # Configure nginx
 RUN echo "daemon off;" >> /etc/nginx/nginx.conf
@@ -127,14 +120,16 @@ RUN mkdir -p /var/www/html \
     && mkdir -p /var/www/html/storage/uploads/variants/thumbnail \
     && mkdir -p /var/log/postportal \
     && touch /var/www/html/index.php \
-    && chown -R www-data:www-data /var/www/html \
+    && chown -R root:root /var/www/html \
     && chown www-data:www-data /var/log/postportal \
     && chmod 750 /var/log/postportal \
-    && chmod -R 775 /var/www/html/storage
+    && install -d -m 775 -o www-data -g www-data /var/www/html/storage /var/www/html/templates_c /var/www/html/cache \
+    && install -d -m 700 -o www-data -g www-data /var/lib/php/sessions
 
 # Copy nginx configuration
 COPY docker/nginx/default.conf /etc/nginx/sites-available/default
 COPY docker/nginx/fastcgi-cache.conf /etc/nginx/conf.d/fastcgi-cache.conf
+COPY docker/nginx/runtime-policy.conf /etc/nginx/conf.d/runtime-policy.conf
 
 # Copy database migrations
 COPY migrations/ /docker-migrations/

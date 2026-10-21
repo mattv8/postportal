@@ -79,7 +79,7 @@ The media directory structure includes `originals/` for uploaded files and `vari
 
 ### Database Migrations
 
-Migrations are automatically applied on container startup from the `migrations/` folder. A new migration script must be created for each new added field. Migration scripts **must be idempotent**.
+Migrations are automatically applied on container startup from the `migrations/` folder. A new migration script must be created for each new added field. Migration scripts **must be idempotent**. The runner fails closed for unknown checksum drift and never records partial SQL; its small verified historical-checksum allowlist only warns and skips without changing existing tracker metadata.
 
 To manually run migrations:
 ```bash
@@ -152,7 +152,7 @@ Use `--db-only` or `--media-only` flags to backup/restore selectively. Run with 
 ## CI/CD
 
 The project uses GitHub Actions to:
-1. Validate pull requests to `main` on GitHub-hosted runners using PHP 8.5 with a minimum runtime floor of 8.5.12.
+1. Validate pull requests on GitHub-hosted runners using PHP 8.5 with a minimum runtime floor of 8.5.12.
 2. Build and push a candidate production image after successful `main` CI.
 3. Verify that immutable candidate digest before publication.
 4. Sign that digest and generate its SBOM.
@@ -171,3 +171,18 @@ git ls-files -z --cached --others --exclude-standard | COPYFILE_DISABLE=1 tar --
 Disabling macOS metadata prevents AppleDouble `._*.sql` files from entering the source context; those binary sidecars are not application migrations.
 
 Repository rule templates and their activation procedure are in [docs/repository-rules.md](docs/repository-rules.md). They are not active merely because these files exist.
+
+Pull requests, including stacked draft pull requests when marked ready for review, run read-only validation on GitHub-hosted runners with no repository secrets. The reusable CI runs PHPUnit, PHPStan, Composer audit, README consistency, policy and DOM checks, and production/development container runtime checks. Feature-branch images are never published or signed. Disposable integration scripts use explicitly built local image tags through `POSTPORTAL_TEST_IMAGE`; they do not assume a private registry image exists.
+
+### Required repository administrator configuration
+
+Privileged publication jobs declare the `production` GitHub Environment. That declaration alone does not configure approvals, branch restrictions, secrets, or runner isolation. Before enabling publication:
+
+- Restrict environment deployment branches to protected `main` and require approval.
+- Move `HARBOR_USERNAME`, `HARBOR_PASSWORD`, `COSIGN_PASSWORD`, and `COSIGN_PRIVATE_KEY` into that environment; remove repository-wide copies available to feature branches.
+- Protect `main`, especially changes to workflows and local composite actions.
+- Isolate production self-hosted runners from untrusted jobs, preferably using ephemeral runners. Scope registry credentials to this image repository.
+
+YAML conditions alone cannot enforce these protections against someone who can change the workflow. These settings require external GitHub administrator configuration; changing this checkout does not configure them.
+
+The sample Compose file still follows the mutable `:main` tag. Deployments that require artifact verification must verify the Cosign signature and deploy the verified digest through their own release process. The workflow's digest signing does not automatically enforce verification at deployment.
