@@ -53,7 +53,7 @@ class CIPolicyTest extends TestCase
         $this->assertStringContainsString('name: CI', $ci);
         $this->assertStringContainsString('pull_request:', $ci);
         $this->assertStringContainsString('workflow_call:', $ci);
-        $this->assertStringContainsString('branches: [main]', $ci);
+        $this->assertStringContainsString('ready_for_review', $ci);
         $this->assertStringNotContainsString('pull_request_target:', $ci);
         $this->assertStringNotContainsString('self-hosted', $ci);
         $this->assertStringNotContainsString('secrets.', $ci);
@@ -64,20 +64,37 @@ class CIPolicyTest extends TestCase
         $this->assertStringContainsString('file: ./docker/Dockerfile.dev', $ci);
         $this->assertStringContainsString('timeout-minutes: 60', $ci);
         $this->assertStringContainsString('image: mariadb:10.6', $ci);
+        $this->assertStringContainsString('mariadb-client', $ci);
+        $this->assertStringContainsString('mariadb --sandbox --version', $ci);
         $this->assertStringContainsString('MIGRATION_DIR="$GITHUB_WORKSPACE/migrations" bash docker/scripts/run-migrations.sh', $ci);
         $this->assertStringNotContainsString('CONFIG_FILE=', $ci);
         $this->assertStringContainsString('run-migrations.sh', $ci);
         $this->assertStringContainsString('DEFAULT_ADMIN_PASSWORD:', $ci);
         $this->assertStringContainsString('APP_SECRET:', $ci);
         $this->assertStringContainsString('persist-credentials: false', $ci);
-        $this->assertStringContainsString('command -v python3 openssl curl setsid', $ci);
+        $this->assertStringContainsString('command -v mariadb python3 openssl curl setsid', $ci);
+        $this->assertStringContainsString('./vendor/bin/phpunit', $this->jobs($ci)['phpunit']);
+        $this->assertStringContainsString('./vendor/bin/phpunit tests/Security/CIPolicyTest.php', $this->jobs($ci)['security-checks']);
+        $this->assertStringContainsString('import-database-safety-test.sh', $this->jobs($ci)['security-checks']);
+        $this->assertStringContainsString('migration-safety-test.sh', $this->jobs($ci)['security-checks']);
+        $this->assertStringContainsString('minification-failure-test.sh', $this->jobs($ci)['security-checks']);
+        $this->assertStringContainsString('node --test tests/Security/*.test.js', $this->jobs($ci)['security-checks']);
+        $containerRuntime = $this->jobs($ci)['container-runtime'];
+        $this->assertStringContainsString('POSTPORTAL_TEST_IMAGE=postportal-ci:production bash tests/Security/Runtime/runtime-hardening-test.sh', $containerRuntime);
+        $this->assertStringContainsString('POSTPORTAL_TEST_IMAGE=postportal-ci:development bash tests/Security/Runtime/runtime-hardening-test.sh', $containerRuntime);
+        $this->assertStringContainsString('import-database-disposable-integration.sh', $this->jobs($ci)['container-runtime']);
+        $this->assertStringContainsString('POSTPORTAL_DISPOSABLE_TEST=1', $this->jobs($ci)['container-runtime']);
+        $this->assertStringContainsString('POSTPORTAL_SOURCE_DIR=/var/www/html', $this->jobs($ci)['container-runtime']);
+        $this->assertStringContainsString('--entrypoint sh', $this->jobs($ci)['container-runtime']);
+        $this->assertStringContainsString('/test/newsletter-verification-runtime-test.sh:ro', $this->jobs($ci)['container-runtime']);
+        $this->assertStringNotContainsString('cp -a /var/www/html/src', $this->jobs($ci)['container-runtime']);
     }
 
     public function testCiGateRequiresEveryMandatoryJobToSucceed(): void
     {
         $ci = $this->workflow('ci.yml');
 
-        foreach (['phpunit', 'phpstan', 'composer-audit', 'readme-consistency', 'container-runtime'] as $job) {
+        foreach (['phpunit', 'phpstan', 'composer-audit', 'security-checks', 'readme-consistency', 'container-runtime'] as $job) {
             $this->assertArrayHasKey($job, $this->jobs($ci));
         }
 
@@ -87,6 +104,22 @@ class CIPolicyTest extends TestCase
         $this->assertStringContainsString('NEEDS_JSON:', $gate);
         $this->assertStringContainsString('ci-gate-test.sh', $gate);
         $this->assertSame($this->requiredJobs(), $this->needs($gate));
+    }
+
+    public function testWorkflowDoesNotInterpolateRefsIntoShellScripts(): void
+    {
+        $workflowPath = __DIR__ . '/../../.github/workflows/build-container.yml';
+        $yaml = file_get_contents($workflowPath);
+        $this->assertIsString($yaml);
+
+        $runBlocks = preg_match_all('/run:\s*\|\n((?:\s{10,}.*\n?)*)/', $yaml, $matches);
+        $this->assertGreaterThan(0, $runBlocks);
+
+        foreach ($matches[1] as $runBlock) {
+            $this->assertStringNotContainsString('${{ github.ref', $runBlock);
+            $this->assertStringNotContainsString('${{ github.head_ref', $runBlock);
+            $this->assertStringNotContainsString('${{ needs.build-and-push.outputs.branch }}', $runBlock);
+        }
     }
 
     public function testPublicationIsMainOnlyAndVerifiesThePushedDigest(): void
@@ -105,6 +138,11 @@ class CIPolicyTest extends TestCase
         $this->assertArrayHasKey('build-and-push', $jobs);
         $this->assertStringContainsString('needs: [ci]', $jobs['build-and-push']);
         $this->assertStringContainsString("github.ref == 'refs/heads/main'", $jobs['build-and-push']);
+        foreach (['build-and-push', 'sign', 'sbom', 'promote'] as $job) {
+            $this->assertStringContainsString("github.ref == 'refs/heads/main'", $jobs[$job]);
+            $this->assertStringContainsString('environment: production', $jobs[$job]);
+            $this->assertStringContainsString('runs-on: self-hosted', $jobs[$job]);
+        }
         $this->assertStringContainsString('pull: true', $jobs['build-and-push']);
         $this->assertStringContainsString('no-cache: true', $jobs['build-and-push']);
         $this->assertStringContainsString('php-runtime-security.sh', $jobs['build-and-push']);
@@ -112,11 +150,14 @@ class CIPolicyTest extends TestCase
         $this->assertStringNotContainsString(':main', $jobs['build-and-push']);
         $this->assertStringNotContainsString(':latest', $jobs['build-and-push']);
         $this->assertStringContainsString('@${{ needs.build-and-push.outputs.digest }}', $jobs['sign']);
+        $this->assertStringContainsString('id-token: write', $jobs['sign']);
+        $this->assertSame(1, substr_count($workflow, 'id-token: write'));
         $this->assertStringContainsString('needs: [build-and-push]', $jobs['sign']);
         $this->assertStringContainsString('@${{ needs.build-and-push.outputs.digest }}', $jobs['sbom']);
         $this->assertStringContainsString('needs: [build-and-push]', $jobs['sbom']);
         $this->assertStringContainsString('upload-artifact: false', $jobs['sbom']);
         $this->assertStringContainsString('uses: actions/upload-artifact@', $jobs['sbom']);
+        $this->assertStringNotContainsString('id-token: write', $jobs['sbom']);
         $this->assertArrayHasKey('promote', $jobs);
         $this->assertStringContainsString('needs: [build-and-push, sign, sbom]', $jobs['promote']);
         $this->assertStringContainsString('git ls-remote origin refs/heads/main', $jobs['promote']);

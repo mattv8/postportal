@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly REQUIRED_JOBS=(phpunit phpstan composer-audit readme-consistency container-runtime)
+readonly REQUIRED_JOBS=(phpunit phpstan composer-audit security-checks readme-consistency container-runtime)
 
 if [[ -z "${NEEDS_JSON:-}" ]] || ! command -v jq >/dev/null || ! jq -e . >/dev/null <<<"$NEEDS_JSON"; then
     echo 'NEEDS_JSON must be a valid JSON object.' >&2

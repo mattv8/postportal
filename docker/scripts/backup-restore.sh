@@ -176,7 +176,7 @@ do_backup() {
         log_msg "${BLUE}[INFO]${NC} Skipping database (media-only mode)"
     else
         log_msg "${GREEN}[BACKUP]${NC} Dumping database..."
-        if ! mysqldump -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE" > "$TEMP_DIR/database.sql" 2>/dev/null; then
+        if ! MYSQL_PWD="$MYSQL_PASSWORD" mysqldump -u"$MYSQL_USER" "$MYSQL_DATABASE" > "$TEMP_DIR/database.sql" 2>/dev/null; then
             echo -e "${RED}[ERROR]${NC} Database dump failed" >&2
             exit 1
         fi
@@ -308,12 +308,8 @@ do_restore() {
         log "Restoring database..."
 
         # Use the import script for proper database restoration
-        if [ -x /docker-scripts/import-database.sh ]; then
-            /docker-scripts/import-database.sh "$TEMP_DIR/database.sql"
-        else
-            # Fallback: direct MySQL import
-            mysql -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE" < "$TEMP_DIR/database.sql"
-        fi
+        [ -x /docker-scripts/import-database.sh ] || { error 'Safe database import command is unavailable'; exit 1; }
+        /docker-scripts/import-database.sh "$TEMP_DIR/database.sql"
 
         info "Database restored successfully"
     else

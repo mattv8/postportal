@@ -8,7 +8,7 @@ use PostPortal\Http\ErrorResponse;
 require_once __DIR__ . '/bootstrap.php';
 
 ApiHandler::handle(function (): void {
-    ['container' => $container] = bootstrapApi();
+    ['container' => $container] = bootstrapApi(allowOptionalSession: false);
     $postService = $container->getPostService();
 
     if ($_SERVER['REQUEST_METHOD'] !== 'POST') {

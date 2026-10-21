@@ -47,4 +47,22 @@ class SessionPolicy
         // nginx and other reverse proxies should ensure Host header is canonical
         ini_set('session.cookie_domain', '');
     }
+
+    /**
+     * Determine whether this request needs a session without allocating one for anonymous APIs.
+     */
+    public static function shouldStartSession(bool $required, bool $allowOptionalSession = true): bool
+    {
+        return $required || ($allowOptionalSession && !empty($_COOKIE[session_name()]));
+    }
+
+    /**
+     * Start a required session or restore an existing session cookie.
+     */
+    public static function startSessionIfNeeded(bool $required, bool $allowOptionalSession = true): void
+    {
+        if (session_status() !== PHP_SESSION_ACTIVE && self::shouldStartSession($required, $allowOptionalSession)) {
+            session_start();
+        }
+    }
 }

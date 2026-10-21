@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace PostPortal\Http;
 
+use PostPortal\Lib\MediaPolicy;
 use RuntimeException;
 use Throwable;
 
@@ -433,7 +434,7 @@ final class ArchiveValidator
             if ($kind === 0040000) { self::walkMedia($path, $root, $finfo); continue; }
             if ($kind !== 0100000 || $stat['size'] > self::MAX_PER_FILE_SIZE) throw new RuntimeException('Unsafe media');
             $extension = strtolower(pathinfo($entry, PATHINFO_EXTENSION)); $mime = finfo_file($finfo, $path);
-            if (!is_string($mime) || !isset(self::ALLOWED_IMAGE_MIMES[$mime]) || !in_array($extension, self::ALLOWED_IMAGE_MIMES[$mime], true) || @getimagesize($path) === false) throw new RuntimeException('Invalid image');
+            if (!is_string($mime) || !isset(self::ALLOWED_IMAGE_MIMES[$mime]) || !in_array($extension, self::ALLOWED_IMAGE_MIMES[$mime], true) || @getimagesize($path) === false || !MediaPolicy::inspectStoredMedia($path, $entry)['success']) throw new RuntimeException('Invalid image');
         }
     }
 
@@ -476,7 +477,7 @@ final class ArchiveValidator
                 self::copyValidatedUploadsDirectory($root, $from, $to, $finfo);
                 continue;
             }
-            if ($kind !== 0100000 || $item['size'] > self::MAX_PER_FILE_SIZE || !self::isValidImage($from, $entry, $finfo)) {
+            if ($kind !== 0100000 || $item['size'] > self::MAX_PER_FILE_SIZE || !self::isValidImage($from, $entry, $finfo) || !MediaPolicy::inspectStoredMedia($from, $entry)['success']) {
                 throw new RuntimeException('Invalid uploads media');
             }
             $in = @fopen($from, 'rb');

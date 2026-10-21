@@ -45,16 +45,16 @@ require_once __DIR__ . '/../Http/ApiHandler.php';
 require_once __DIR__ . '/../Security/HmacPrivacyKey.php';
 
 /**
- * Initialize API execution context with shared behaviors (headers, session, auth, DB, services).
+ * Initialize API execution context with shared behaviors (headers, optional session, auth, DB, services).
  *
  * @return array{container: ServiceContainer, db: mysqli}
  */
-function bootstrapApi(bool $requireAuth = false, bool $requireAdmin = false): array
+function bootstrapApi(bool $requireAuth = false, bool $requireAdmin = false, bool $allowOptionalSession = true): array
 {
     header('Content-Type: application/json');
     // SEC-09: Apply session policy before first session_start
     SessionPolicy::apply();
-    ensureSession();
+    SessionPolicy::startSessionIfNeeded($requireAuth || $requireAdmin, $allowOptionalSession);
 
     if ($requireAuth && (empty($_SESSION['authenticated']) || empty($_SESSION['username']))) {
         ErrorResponse::unauthorized('Unauthorized');

@@ -55,6 +55,7 @@ function verifyRecaptchaToken(string $token, string $secret): bool
 ApiHandler::handle(function (): void {
     // Login doesn't require auth, but we need the DB connection and services
     ['container' => $container, 'db' => $db] = bootstrapApi();
+    ensureSession();
 
     if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
         ErrorResponse::json(405, 'Method not allowed');

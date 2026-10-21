@@ -12,7 +12,7 @@ DB_USER="${MYSQL_USER:-}"
 DB_PASSWORD="${MYSQL_PASSWORD:-}"
 DB_NAME="${MYSQL_DATABASE:-}"
 DB_ROOT_PASSWORD="${MYSQL_ROOT_PASSWORD:-}"
-[[ -n "$DB_ROOT_PASSWORD" || ! -f /var/run/mysql_root_password ]] || DB_ROOT_PASSWORD="$(< /var/run/mysql_root_password)"
+[[ -n "$DB_ROOT_PASSWORD" || ! -r /var/run/mysql_root_password ]] || DB_ROOT_PASSWORD="$(< /var/run/mysql_root_password)"
 
 valid_identifier() { [[ "$1" =~ ^[A-Za-z0-9_]{1,64}$ ]]; }
 valid_identifier "$DB_NAME" && valid_identifier "$DB_USER" || fail 'Invalid database configuration'
@@ -30,9 +30,16 @@ case "$1" in
     *) SQL_FILE="$1"; [[ -f "$SQL_FILE" && -s "$SQL_FILE" ]] || fail 'SQL dump unavailable' ;;
 esac
 
-mysql_user() { MYSQL_PWD="$DB_PASSWORD" mysql --protocol=TCP -h "$DB_HOST" -u "$DB_USER" "$@"; }
-mysql_root() { MYSQL_PWD="$DB_ROOT_PASSWORD" mysql --protocol=TCP -h "$DB_HOST" -u root "$@"; }
+safe_mysql_options=(--protocol=TCP --sandbox --local-infile=0)
 
+require_safe_mysql_client() {
+    mysql --sandbox --local-infile=0 --help >/dev/null 2>&1 || fail 'MariaDB client sandbox mode is required for database import'
+}
+
+mysql_user() { MYSQL_PWD="$DB_PASSWORD" mysql "${safe_mysql_options[@]}" -h "$DB_HOST" -u "$DB_USER" "$@"; }
+mysql_root() { MYSQL_PWD="$DB_ROOT_PASSWORD" mysql "${safe_mysql_options[@]}" -h "$DB_HOST" -u root "$@"; }
+
+require_safe_mysql_client
 log 'Preparing database restore'
 if [[ -n "$DB_ROOT_PASSWORD" ]]; then
     # Identifiers are validated above before they are interpolated into SQL.

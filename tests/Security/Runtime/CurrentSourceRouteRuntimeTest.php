@@ -106,6 +106,32 @@ final class CurrentSourceRouteRuntimeTest extends TestCase
         $this->assertAdminControls();
     }
 
+    public function testCookieLessPostsApiRequestDoesNotCreateSession(): void
+    {
+        $sessionFilesBefore = glob($this->sessionDirectory . '/sess_*') ?: [];
+
+        $response = $this->get('/api/posts.php?limit=50');
+
+        self::assertSame(200, $response['status']);
+        self::assertArrayNotHasKey('set-cookie', $response['headers']);
+        self::assertSame($sessionFilesBefore, glob($this->sessionDirectory . '/sess_*') ?: []);
+    }
+
+    public function testMetricsUpdateDoesNotChangeContentTimestamp(): void
+    {
+        $before = $this->database->query('SELECT updated_at FROM posts WHERE id = ' . $this->publishedPostId)->fetch_assoc();
+        $repository = new \PostPortal\Repository\PostRepository($this->database);
+
+        self::assertNotNull($before);
+        self::assertTrue($repository->incrementMetrics($this->publishedPostId, 1, 0, 1, 0));
+
+        $after = $this->database->query('SELECT impression_count, view_count, updated_at FROM posts WHERE id = ' . $this->publishedPostId)->fetch_assoc();
+        self::assertNotNull($after);
+        self::assertSame(1, (int) $after['impression_count']);
+        self::assertSame(1, (int) $after['view_count']);
+        self::assertSame($before['updated_at'], $after['updated_at']);
+    }
+
     private function assertDraftAccessAndLists(): void
     {
         foreach ([null, $this->nonAdminSessionId] as $sessionId) {

@@ -23,9 +23,9 @@ chmod 750 /var/log/postportal
 mkdir -p /run/php /run/mysqld
 chown www-data:www-data /run/php
 chown mysql:mysql /run/mysqld
-mkdir -p /var/www/html/storage/uploads/{originals,variants/{400,800,1600,thumbnail}}
-chown -R www-data:www-data /var/www/html/storage
-chmod -R 775 /var/www/html/storage
+mkdir -p /var/www/html/storage/uploads/{originals,variants/{400,800,1600,thumbnail}} /var/www/html/templates_c /var/www/html/cache /var/www/html/templates_c /var/www/html/cache
+chown -R www-data:www-data /var/www/html/storage /var/www/html/templates_c /var/www/html/cache
+chmod -R 775 /var/www/html/storage /var/www/html/templates_c /var/www/html/cache
 
 printf 'upload_max_filesize = %s\npost_max_size = %s\nmemory_limit = %s\nmax_execution_time = %s\n' \
     "$PHP_UPLOAD_MAX_FILESIZE" "$PHP_POST_MAX_SIZE" "$PHP_MEMORY_LIMIT" "$PHP_MAX_EXECUTION_TIME" \
@@ -83,6 +83,8 @@ if [ -f /tmp/admin_password_hash ]; then
         -e "UPDATE users SET password = 0x${admin_hash_hex} WHERE username = 'admin';"
     rm -f /tmp/admin_password_hash
 fi
+
+unset MYSQL_ROOT_PASSWORD DEFAULT_ADMIN_PASSWORD
 
 if [ "${DEMO_MODE,,}" = true ]; then
     php /var/www/html/lib/demo_seed.php --force
