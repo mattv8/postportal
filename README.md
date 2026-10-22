@@ -33,10 +33,16 @@ A flexible post and update platform built on PHP with Smarty templates, featurin
    # Required only for the first database initialization; at least 16 characters.
    DEFAULT_ADMIN_PASSWORD=
 
-   # Required application secret. Generate it with: openssl rand -hex 32
+   # Required application secret: exactly 64 hexadecimal characters (32 bytes).
+   # New installs: generate it with: openssl rand -hex 32
+   # Upgrades: do NOT generate a new value. Copy the unchanged APP_ENCRYPTION_KEY from your old .env.
+   # Never rotate this value blindly; it is persistent key material.
    APP_SECRET=
 
-   # Required canonical public URL (absolute http/https; no credentials, query, or fragment).
+   # Required canonical browser-facing URL, including the scheme (e.g. https://portal.example.test).
+   # Behind a TLS reverse proxy, use the public HTTPS address, not the internal container host or port.
+   # An optional public port or base path is allowed. No credentials, query, fragment, or whitespace.
+   # Upgrades from older templates may lack this line; add it explicitly.
    APP_URL=
 
    # OpenAI API Configuration
@@ -80,7 +86,7 @@ A flexible post and update platform built on PHP with Smarty templates, featurin
 
    </details>
 
-2. **Edit `.env`** and configure your specific values (see [Environment Variables](#environment-variables) section)
+2. **Edit `.env`** and configure your specific values (see [Environment Variables](#environment-variables) section). `APP_SECRET` and `APP_URL` are required; see [Application Secret Setup](#application-secret-setup) and [Public URL (APP_URL)](#public-url-app_url).
 
 3. **Create docker-compose.yml:**
 
@@ -151,22 +157,56 @@ Database imports require a MariaDB client with sandbox support and disable local
 
 To update to the latest version:
 
+Complete the [backup](#backup--restore) and [upgrade `.env` checks](#upgrading-an-existing-env) before running these commands.
+
 ```bash
 docker compose pull
-docker compose up -d
+docker compose up -d postportal
 ```
-> 💡 **Tip:** [Create a backup](#gui-backup--restore) first.
 
 If MariaDB system tables exist but Post Portal initialization is incomplete, startup fails closed. Use a new empty volume, restoring a backup into it when existing data must be recovered, rather than expecting automatic repair.
 
 ### Application Secret Setup
 
-- **New installations:** Generate `APP_SECRET` with `openssl rand -hex 32`.
-- **Upgrades from `APP_ENCRYPTION_KEY`:** Do **not** generate a new value. Copy the unchanged old `APP_ENCRYPTION_KEY` value to `APP_SECRET` so startup can migrate v2 SMTP ciphertext.
+`APP_SECRET` must be exactly 64 hexadecimal characters (32 bytes). Startup rejects any other length or non-hexadecimal character.
 
-After the first hardened start, treat `APP_SECRET` as persistent key material; do not change it without a corresponding encrypted-data migration.
+- **New installations:** Generate it with `openssl rand -hex 32`.
+- **Upgrades from `APP_ENCRYPTION_KEY`:** Do **not** generate a new value. Copy the unchanged old `APP_ENCRYPTION_KEY` value to `APP_SECRET` so startup can migrate v2 SMTP ciphertext. Generating a new value cannot decrypt existing ciphertext.
+
+After the first hardened start, treat `APP_SECRET` as persistent key material. Never rotate it blindly; do not change it without a corresponding encrypted-data migration.
 
 Existing unsubscribe links become invalid after this upgrade.
+
+### Upgrading an Existing `.env`
+
+Older `.env` files may lack `APP_URL`, and may hold `APP_ENCRYPTION_KEY` instead of `APP_SECRET`. Startup rejects the configuration until both are correct.
+
+1. **Back up persistent data before the first upgraded start.** Startup runs database migrations.
+   - Keep a private copy of the current `.env` in your secure backup location before you edit it. Database and media backups do not contain `APP_SECRET`, `APP_ENCRYPTION_KEY`, or database credentials, so without this copy the encrypted data may be unrecoverable.
+   - If the existing site is still reachable, use **Admin → Backup** to download the database and media.
+   - Otherwise, stop the service first so MariaDB is not writing to the volume: `docker compose stop postportal`. Then copy the `db_data` volume and the `./storage` and `./logs` directories with your usual method.
+2. **Edit the existing `.env` in place.** Do not replace it with `.env.example`, which would overwrite your database settings. Keep `MYSQL_USER` and `MYSQL_PASSWORD` unchanged (see [Upgrading Existing Database Credentials](#upgrading-existing-database-credentials)).
+3. **Set `APP_SECRET`.**
+   - If the old file has `APP_ENCRYPTION_KEY`, copy its value unchanged to `APP_SECRET`. Keep the old line until the upgraded start succeeds.
+   - If `APP_SECRET` is already present and is 64 hexadecimal characters, leave it unchanged.
+   - If neither value exists, stop and confirm the correct key with the person who manages the deployment. Do not generate a new value for an existing installation.
+4. **Add `APP_URL`** as described in [Public URL (APP_URL)](#public-url-app_url).
+5. **Recreate the service:**
+   ```bash
+   docker compose up -d postportal
+   ```
+   `docker compose restart` does not reload `.env`, so the container keeps its previous environment. Use `up -d` after every `.env` change.
+6. **Check the container logs** with `docker compose logs postportal`. Startup validates the resolved environment. A message beginning with `Invalid runtime configuration:` names the setting to fix; correct `.env` and repeat step 5.
+
+### Public URL (APP_URL)
+
+`APP_URL` is required on every install, including upgrades. Set it to the canonical address visitors use in the browser.
+
+- Include the scheme. Use `https` for public sites: `APP_URL=https://portal.example.test`.
+- Behind a TLS reverse proxy, use the public HTTPS address, not the internal container hostname or HTTP port.
+- An optional public port (`https://portal.example.test:8443`) or base path (`https://portal.example.test/portal`) is allowed when the public address uses one.
+- Do not include credentials (`user:password@`), a query string (`?`), a fragment (`#`), or whitespace or control characters.
+- Keep the value consistent with how the site is served. Start-up validation checks format only; it does not confirm that the URL reaches the site.
 
 ### Upgrading Existing Database Credentials
 
@@ -195,8 +235,8 @@ Note: MySQL root password is auto-generated for security.
 - `DEFAULT_ADMIN_PASSWORD` - Initial admin user password (required for first setup)
 
 ### Application Configuration
-- `APP_SECRET` - Required 64-character hexadecimal application secret. New installations generate it with `openssl rand -hex 32`; upgrades retain the unchanged old `APP_ENCRYPTION_KEY` value instead.
-- `APP_URL` - Required canonical public URL. It cannot be safely derived server-side because reverse proxies can obscure the original public scheme and host.
+- `APP_SECRET` - Required application secret: exactly 64 hexadecimal characters. New installations generate it with `openssl rand -hex 32`; upgrades reuse the unchanged old `APP_ENCRYPTION_KEY` value. See [Application Secret Setup](#application-secret-setup).
+- `APP_URL` - Required canonical browser-facing URL with scheme, e.g. `https://portal.example.test`. It cannot be safely derived server-side because reverse proxies can obscure the original public scheme and host. See [Public URL (APP_URL)](#public-url-app_url).
 
 ### Debug Settings
 - `DEBUG` - Enable debug mode (default: `false`)

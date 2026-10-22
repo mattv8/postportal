@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Production change this catches: startup accepts weak/malformed configuration
-# or emits the supplied secret while rejecting it.
+# Production change this catches: startup accepts weak/malformed configuration,
+# emits supplied values while rejecting it, or removes safe recovery guidance.
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 validator="$repo_root/docker/scripts/validate-environment.sh"
 secret='Punct!$`;&\\ quote" value-0123456789'
@@ -36,15 +36,103 @@ assert_rejected_without_secret() {
     [[ "$output" != *"$secret"* ]] || fail "validator disclosed a supplied secret"
 }
 
+capture_rejection() {
+    local status
+    set +e
+    validator_output="$(run_validator "$@" 2>&1)"
+    status=$?
+    set -e
+    [ "$status" -ne 0 ] || fail 'invalid configuration was accepted'
+}
+
+assert_output_has_tokens() {
+    local expected
+    for expected in "$@"; do
+        [[ "$validator_output" == *"$expected"* ]] \
+            || fail "missing required diagnostic token: $expected"
+    done
+}
+
+assert_output_hides() {
+    local forbidden
+    for forbidden in "$@"; do
+        [[ "$validator_output" != *"$forbidden"* ]] \
+            || fail 'validator disclosed a supplied configuration value'
+    done
+}
+
 [ -x "$validator" ] || fail 'environment validator is missing or not executable'
 
 run_validator >/dev/null || fail 'strong punctuation-rich configuration was rejected'
+run_validator APP_SECRET=ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789 >/dev/null \
+    || fail 'uppercase 64-hex APP_SECRET was rejected'
+run_validator APP_URL=http://localhost:8080/postportal >/dev/null \
+    || fail 'valid local APP_URL was rejected'
 assert_rejected_without_secret 'Invalid runtime configuration: MYSQL_PASSWORD is required' MYSQL_PASSWORD=
 assert_rejected_without_secret 'Invalid runtime configuration: DEFAULT_ADMIN_PASSWORD does not meet password policy' DEFAULT_ADMIN_PASSWORD=changeme_admin
-assert_rejected_without_secret 'Invalid runtime configuration: APP_SECRET is required' APP_SECRET=
-assert_rejected_without_secret 'Invalid runtime configuration: APP_SECRET is invalid' APP_SECRET=not-a-secret
-assert_rejected_without_secret 'Invalid runtime configuration: APP_URL is invalid' APP_URL='https://user:pass@portal.example.test/'
-assert_rejected_without_secret 'Invalid runtime configuration: APP_URL is invalid' APP_URL='https://portal.example.test/?query=value'
+capture_rejection APP_SECRET=
+assert_output_has_tokens \
+    'Invalid runtime configuration: APP_SECRET is required' \
+    '64 hexadecimal characters (32 bytes)' \
+    'openssl rand -hex 32' \
+    'new installs only' \
+    'reuse the existing APP_ENCRYPTION_KEY unchanged' \
+    'Do not rotate existing key material blindly'
+assert_output_hides "$secret"
+malformed_secret='not-a-secret'
+capture_rejection APP_SECRET="$malformed_secret"
+assert_output_has_tokens \
+    'Invalid runtime configuration: APP_SECRET is invalid' \
+    '64 hexadecimal characters (32 bytes)' \
+    'openssl rand -hex 32' \
+    'reuse the existing APP_ENCRYPTION_KEY unchanged' \
+    'Do not rotate existing key material blindly'
+assert_output_hides "$secret" "$malformed_secret"
+capture_rejection POSTPORTAL_DATABASE_FRESH=false MYSQL_DATABASE=
+assert_output_has_tokens \
+    'Invalid runtime configuration: MYSQL_DATABASE is required' \
+    'restore its original MYSQL_DATABASE value'
+capture_rejection POSTPORTAL_DATABASE_FRESH=false MYSQL_USER=
+assert_output_has_tokens \
+    'Invalid runtime configuration: MYSQL_USER is required' \
+    'restore its original MYSQL_USER value'
+capture_rejection POSTPORTAL_DATABASE_FRESH=false MYSQL_PASSWORD=
+assert_output_has_tokens \
+    'Invalid runtime configuration: MYSQL_PASSWORD is required' \
+    'restore its original MYSQL_PASSWORD value'
+capture_rejection POSTPORTAL_DATABASE_FRESH=false DEFAULT_ADMIN_PASSWORD=
+assert_output_has_tokens \
+    'Invalid runtime configuration: DEFAULT_ADMIN_PASSWORD is required' \
+    'non-empty value' \
+    'preserved administrator account; no reset is needed'
+capture_rejection POSTPORTAL_DATABASE_FRESH=maybe
+assert_output_has_tokens \
+    'Invalid runtime configuration: POSTPORTAL_DATABASE_FRESH is invalid' \
+    'set internally by the entrypoint' \
+    'do not add or edit it in .env'
+capture_rejection APP_URL=
+assert_output_has_tokens \
+    'Invalid runtime configuration: APP_URL is required' \
+    'Set, add, or correct APP_URL in .env' \
+    'canonical browser-facing public http/https URL' \
+    'https://portal.example.test' \
+    'plain hostname or IP address with an optional port' \
+    'browser-facing public HTTPS URL, not the internal container address' \
+    'credentials, query strings, fragments, or whitespace' \
+    'docker compose up -d postportal' \
+    'restart does not apply changed environment'
+assert_output_hides "$secret"
+credential_userinfo='dbuser:dbpass@'
+credential_password='dbpass'
+credential_url="https://${credential_userinfo}portal.example.test/"
+capture_rejection APP_URL="$credential_url"
+assert_output_has_tokens 'Invalid runtime configuration: APP_URL is invalid' 'APP_URL must not contain credentials'
+assert_output_hides "$secret" "$credential_url" "$credential_userinfo" "$credential_password"
+query_value='private-query'
+query_url="https://portal.example.test/?token=${query_value}"
+capture_rejection APP_URL="$query_url"
+assert_output_has_tokens 'Invalid runtime configuration: APP_URL is invalid'
+assert_output_hides "$secret" "$query_url" "$query_value"
 assert_rejected_without_secret 'Invalid runtime configuration: MYSQL_BIND_ADDRESS is invalid' MYSQL_BIND_ADDRESS=192.168.1.5
 assert_rejected_without_secret 'Invalid runtime configuration: PHP_MEMORY_LIMIT is invalid' PHP_MEMORY_LIMIT='256M;auto_prepend_file=/tmp/pwn'
 legacy_db_password='legacy-db-pass'
